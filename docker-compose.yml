@@ -1,0 +1,32 @@
+version: '3.8'
+
+services:
+  bot:
+    build: .
+    container_name: rag-whatsapp-bot
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      - ./documents:/app/documents
+      - ./chroma_db:/app/chroma_db
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Optional: ngrok for local development
+  # Uncomment and add your ngrok auth token to expose locally
+  # ngrok:
+  #   image: ngrok/ngrok:latest
+  #   command: http bot:8000
+  #   environment:
+  #     - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN}
+  #   ports:
+  #     - "4040:4040"
+  #   depends_on:
+  #     - bot
