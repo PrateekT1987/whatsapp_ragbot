@@ -147,7 +147,8 @@ naive bot would keep answering itself. This project:
 | `/stats` | GET | index statistics |
 | `/reload` | POST | rebuild index |
 | `/send?chat_id=...&message=...` | POST | send a message via WAHA |
-| `/qr` | GET | pairing QR (PNG proxy) |
+| `/qr` | GET | pairing page (HTML, auto-refreshes) |
+| `/qr.png` | GET | pairing QR (raw PNG) |
 | `/session`, `/session/start` | GET/POST | WAHA session state |
 
 ## Project structure
@@ -190,8 +191,15 @@ Or system-wide: `sudo apt install docker-compose-plugin` (Debian/Ubuntu),
 set `WHATSAPP_DEFAULT_ENGINE=GOWS` (or `WEBJS`) in `docker-compose.yml` and
 restart; the engine determines which WhatsApp protocol implementation is used.
 
-**Session says `SCAN_QR_CODE` / `FAILED`** – `POST /session/start` (or restart
-the WAHA container), then rescan from the dashboard.
+**`/qr` shows an error or nothing** – the page auto-restarts an expired session
+and retries, but the first render can take ~10 s. If you browse from another
+machine, `localhost` is *your* machine, not the server: use the server's IP
+(`http://<server-ip>:8000/qr`) or forward the port with
+`ssh -L 8000:localhost:8000 user@server` and open `http://localhost:8000/qr`.
+
+**Session says `SCAN_QR_CODE` / `FAILED`** – just reload `http://localhost:8000/qr`;
+it restarts the session automatically. You can also `POST /session/start` or
+restart the WAHA container.
 
 **Bot never replies in the self-chat** – WAHA must send `fromMe` events, which
 requires `WHATSAPP_HOOK_EVENTS` to include `message.any` (already set).

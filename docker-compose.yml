@@ -15,6 +15,8 @@ services:
       WAHA_API_KEY: ${WAHA_API_KEY:-}
       WHATSAPP_HOOK_HMAC_KEY: ${WAHA_HMAC_KEY:-}
       WHATSAPP_RESTART_ALL_SESSIONS: "True"
+      # The QR is served by the bot at /qr; keep the console readable.
+      WAHA_PRINT_QR: "false"
       WAHA_DASHBOARD_USERNAME: ${WAHA_DASHBOARD_USERNAME:-admin}
       # WAHA silently replaces well-known values ("waha", "admin", "123", ...)
       # with a random password, so leave this empty to let WAHA generate and

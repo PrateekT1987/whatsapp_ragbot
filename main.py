@@ -4,9 +4,10 @@ import hmac
 import json
 import logging
 from contextlib import asynccontextmanager
+from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 from config import config
 from rag import rag_system
@@ -236,16 +237,95 @@ async def send_message(chat_id: str, message: str):
     return {"success": True, "chat_id": chat_id}
 
 
-@app.get("/qr")
-async def qr():
-    """Proxy the WAHA pairing QR so you can scan it from the browser."""
-    image = await waha.qr_image()
+async def _prepare_qr() -> tuple[Optional[bytes], str]:
+    """Return (qr_png, session_status), restarting FAILED/STOPPED sessions.
+
+    WAHA abandons a session that is not paired within its QR window, so opening
+    /qr after a while would otherwise just show nothing until a manual restart.
+    """
+    info = await waha.session_status()
+    status = info.get("status", "unknown")
+
+    if status in ("FAILED", "STOPPED", "unknown", "unreachable"):
+        if status == "FAILED":
+            await waha.restart_session()
+        else:
+            await waha.start_session()
+        image = await waha.wait_for_qr()
+        info = await waha.session_status()
+        status = info.get("status", status)
+    else:
+        image = await waha.qr_image()
+
+    return image, status
+
+
+@app.get("/qr.png")
+async def qr_png():
+    """Raw pairing QR (PNG). Restarts the session if it expired."""
+    image, status = await _prepare_qr()
     if not image:
         raise HTTPException(
-            status_code=404,
-            detail=f"QR not available. Open {config.WAHA_BASE_URL}/dashboard",
+            status_code=503,
+            detail=f"QR not available yet (session status: {status}). Retry in a few seconds.",
         )
-    return Response(content=image, media_type="image/png")
+    return Response(
+        content=image,
+        media_type="image/png",
+        headers={"Cache-Control": "no-store, max-age=0"},
+    )
+
+
+@app.get("/qr")
+async def qr_page():
+    """Browser-friendly pairing page with a live, auto-refreshing QR."""
+    info = await waha.session_status()
+    status = info.get("status", "unknown")
+
+    if status == "WORKING":
+        body = (
+            "<h1>✅ WhatsApp is already paired</h1>"
+            "<p>Open WhatsApp → <b>Message Yourself</b> and send a question.</p>"
+            f'<p class="muted">Session: {config.WAHA_SESSION}</p>'
+        )
+    else:
+        body = (
+            "<h1>Scan to pair WhatsApp</h1>"
+            f'<p class="muted">Session status: <code>{status}</code></p>'
+            '<div class="frame"><img id="qr" src="/qr.png" alt="pairing QR" '
+            'onerror="this.style.display=\'none\';document.getElementById(\'msg\').style.display=\'block\'">'
+            '<p id="msg" style="display:none">Generating a fresh QR…</p></div>'
+            "<p>WhatsApp → <b>Settings</b> → <b>Linked devices</b> → <b>Link a device</b></p>"
+            "<p>This page refreshes every 10 seconds; the QR expires quickly.</p>"
+        )
+
+    html = f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="10">
+<title>WhatsApp pairing · RAG bot</title>
+<style>
+  :root {{ color-scheme: dark; }}
+  body {{ font-family: system-ui, sans-serif; background:#0b141a; color:#e9edef;
+         display:flex; flex-direction:column; align-items:center; justify-content:center;
+         min-height:100vh; margin:0; padding:24px; text-align:center; }}
+  h1 {{ font-size:1.4rem; margin:0 0 12px; }}
+  p {{ margin:8px 0; }}
+  .muted {{ color:#8696a0; font-size:.9rem; }}
+  code {{ background:#202c33; padding:2px 6px; border-radius:4px; }}
+  .frame {{ background:#fff; padding:14px; border-radius:12px; margin:18px 0; }}
+  img {{ display:block; width:292px; height:292px; image-rendering:pixelated; }}
+  #msg {{ color:#111; width:292px; height:292px; display:flex; align-items:center;
+          justify-content:center; margin:0; font-weight:600; }}
+</style>
+</head>
+<body>
+{body}
+</body>
+</html>"""
+    return HTMLResponse(content=html, headers={"Cache-Control": "no-store"})
 
 
 @app.post("/session/start")

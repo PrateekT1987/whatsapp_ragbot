@@ -11,6 +11,7 @@ of a "Message Yourself" bot:
    `message` and `message.any` events, and retries on errors. Message ids are
    remembered with a TTL.
 """
+import asyncio
 import hashlib
 import logging
 import time
@@ -245,11 +246,29 @@ class WAHAClient:
 
     async def start_session(self) -> dict:
         """Start (or resume) the WAHA session. Safe to call repeatedly."""
-        data = await self._post("/api/sessions/start", {"name": self.session})
+        data = await self._post(f"/api/sessions/{self.session}/start", {})
         if data is None:
-            # Newer WAHA builds expose POST /api/sessions instead.
+            # Older/alternative WAHA builds expose POST /api/sessions instead.
             data = await self._post("/api/sessions", {"name": self.session, "start": True})
         return data or {}
+
+    async def restart_session(self) -> dict:
+        """Restart a FAILED/expired session so a fresh QR can be generated."""
+        data = await self._post(f"/api/sessions/{self.session}/restart", {})
+        if data is None:
+            await self._post(f"/api/sessions/{self.session}/stop", {})
+            data = await self._post(f"/api/sessions/{self.session}/start", {})
+        return data or {}
+
+    async def wait_for_qr(self, attempts: int = 20, delay: float = 0.7) -> Optional[bytes]:
+        """Poll WAHA until a QR image is available (it appears a few seconds
+        after the session starts)."""
+        for _ in range(attempts):
+            image = await self.qr_image()
+            if image:
+                return image
+            await asyncio.sleep(delay)
+        return None
 
     async def qr_image(self) -> Optional[bytes]:
         """Fetch the pairing QR as PNG (dashboard is the fallback)."""
