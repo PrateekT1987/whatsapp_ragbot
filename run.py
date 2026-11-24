@@ -1,67 +1,59 @@
 #!/usr/bin/env python3
-"""
-Entry point for running the RAG WhatsApp Bot.
-This script validates configuration and starts the server.
-"""
+"""Validate configuration and start the RAG WhatsApp bot."""
 import sys
 from pathlib import Path
 
-# Add the project root to Python path
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 
 from config import config
 
 
-def check_config():
-    """Check if all required configuration is present."""
+def check_config() -> bool:
     missing = config.validate()
     if missing:
         print("❌ Missing required configuration:")
         for item in missing:
             print(f"  - {item}")
-        print("\n📝 Please copy .env.example to .env and fill in your credentials:")
+        print("\n📝 Copy .env.example to .env and fill in the values:")
         print("   cp .env.example .env")
-        print("   # Then edit .env with your values")
         return False
     return True
 
 
-def check_documents_folder():
-    """Ensure documents folder exists."""
+def check_documents_folder() -> None:
     if not config.DOCUMENTS_PATH.exists():
         config.DOCUMENTS_PATH.mkdir(parents=True, exist_ok=True)
         print(f"📁 Created documents folder: {config.DOCUMENTS_PATH}")
     else:
         pdf_count = len(list(config.DOCUMENTS_PATH.glob("*.pdf")))
-        print(f"📁 Documents folder exists with {pdf_count} PDF file(s)")
+        print(f"📁 Documents folder: {pdf_count} PDF file(s)")
 
 
-def main():
-    print("🤖 RAG WhatsApp Bot")
+def main() -> None:
+    print("🤖 RAG WhatsApp Bot (WAHA)")
     print("=" * 40)
-    
+
     if not check_config():
         sys.exit(1)
-    
+
     check_documents_folder()
-    
-    print("\n🚀 Starting server...")
-    print(f"   Host: {config.HOST}")
-    print(f"   Port: {config.PORT}")
-    print(f"   Webhook URL: {config.WEBHOOK_URL or 'Not set'}")
-    print("\n📱 Configure Twilio webhook to: {config.WEBHOOK_URL}/webhook")
-    print("   (Use ngrok or similar for local development)")
+
+    print(f"\n🧠 Model:      {config.LLM_MODEL} ({config.LLM_PROVIDER})")
+    print(f"🔎 Embeddings: {config.EMBEDDING_PROVIDER}")
+    print(f"📡 WAHA:       {config.WAHA_BASE_URL} (session: {config.WAHA_SESSION})")
+    print(f"🚀 Server:     http://{config.HOST}:{config.PORT}")
+
+    print("\n📱 Pairing")
+    print(f"   Dashboard: {config.WAHA_BASE_URL}/dashboard")
+    print(f"   QR proxy:  http://localhost:{config.PORT}/qr")
+    print("\n💬 First time: send any message to yourself in WhatsApp")
+    print("   ('Message Yourself') and the bot will reply in the same chat.")
     print("\n" + "=" * 40)
-    
-    # Import and run uvicorn
+
     import uvicorn
-    uvicorn.run(
-        "main:app",
-        host=config.HOST,
-        port=config.PORT,
-        reload=True
-    )
+
+    uvicorn.run("main:app", host=config.HOST, port=config.PORT, reload=True)
 
 
 if __name__ == "__main__":

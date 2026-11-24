@@ -1,0 +1,13 @@
+.git
+.gitignore
+.venv
+venv
+__pycache__
+*.pyc
+.env
+.chroma
+chroma_db
+waha_sessions
+documents
+*.log
+.pytest_cache

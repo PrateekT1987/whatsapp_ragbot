@@ -6,7 +6,7 @@ import logging
 
 from langchain_community.document_loaders import PyPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_openai import OpenAIEmbeddings, ChatOpenAI
+from langchain_openai import ChatOpenAI
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate
@@ -14,38 +14,50 @@ from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
 
 from config import config
+from embeddings import get_embeddings
 
 logger = logging.getLogger(__name__)
 
 
 class RAGSystem:
     def __init__(self):
-        # Use OpenAI API key for embeddings (required by OpenAIEmbeddings)
-        # For OpenRouter, we need an OpenAI-compatible embedding model
-        embedding_api_key = config.OPENAI_API_KEY or config.OPENROUTER_API_KEY
-        self.embeddings = OpenAIEmbeddings(openai_api_key=embedding_api_key)
-        
-        # Configure LLM based on provider
+        # Local ONNX embeddings by default - OpenRouter has no embeddings API.
+        self.embeddings = get_embeddings()
+
         if config.LLM_PROVIDER == "openrouter":
             api_key = config.OPENROUTER_API_KEY
             base_url = config.OPENROUTER_BASE_URL
-            model = config.LLM_MODEL
+            extra_headers = {
+                "HTTP-Referer": "https://github.com/PrateekT1987/whatsapp_ragbot",
+                "X-Title": "RAG WhatsApp Bot",
+            }
         else:
             api_key = config.OPENAI_API_KEY
             base_url = None
-            model = config.LLM_MODEL
-        
+            extra_headers = None
+
         self.llm = ChatOpenAI(
-            model=model,
+            model=config.LLM_MODEL,
             temperature=0,
             openai_api_key=api_key,
-            base_url=base_url
+            base_url=base_url,
+            default_headers=extra_headers,
+            timeout=120,
+            max_retries=2,
         )
         self.vectorstore: Optional[Chroma] = None
         self.retriever = None
         self.qa_chain = None
         self._processed_files: set = set()
-        
+
+    @staticmethod
+    def _chroma_settings():
+        """Disable Chroma's anonymous telemetry (it also logs noisy warnings)."""
+        import chromadb
+        from chromadb.config import Settings
+
+        return Settings(anonymized_telemetry=False)
+
     def initialize(self) -> None:
         """Initialize the vector store and QA chain."""
         logger.info("Initializing RAG system...")
@@ -56,17 +68,23 @@ class RAGSystem:
         # Load or create vector store
         self.vectorstore = Chroma(
             persist_directory=str(config.CHROMA_PERSIST_DIR),
-            embedding_function=self.embeddings
+            embedding_function=self.embeddings,
+            client_settings=self._chroma_settings(),
         )
         
-        self.retriever = self.vectorstore.as_retriever(
-            search_kwargs={"k": config.TOP_K_RESULTS}
-        )
-        
-        # Create QA chain
-        self._create_qa_chain()
-        
+        self._refresh_chain()
         logger.info("RAG system initialized")
+
+    def _refresh_chain(self) -> None:
+        """Rebuild retriever + QA chain, clamping k to the index size."""
+        try:
+            count = self.vectorstore._collection.count()
+        except Exception:  # noqa: BLE001
+            count = config.TOP_K_RESULTS
+
+        k = max(1, min(config.TOP_K_RESULTS, count)) if count else 1
+        self.retriever = self.vectorstore.as_retriever(search_kwargs={"k": k})
+        self._create_qa_chain()
     
     def _create_qa_chain(self) -> None:
         """Create the RAG QA chain."""
@@ -135,8 +153,9 @@ class RAGSystem:
         
         # Add to vector store
         self.vectorstore.add_documents(splits)
+        self._refresh_chain()
         logger.info("Documents added to vector store")
-        
+
         return len(new_files)
     
     def remove_document(self, file_path: Path) -> bool:
@@ -163,12 +182,10 @@ class RAGSystem:
         # Reinitialize
         self.vectorstore = Chroma(
             persist_directory=str(config.CHROMA_PERSIST_DIR),
-            embedding_function=self.embeddings
+            embedding_function=self.embeddings,
+            client_settings=self._chroma_settings(),
         )
-        self.retriever = self.vectorstore.as_retriever(
-            search_kwargs={"k": config.TOP_K_RESULTS}
-        )
-        self._create_qa_chain()
+        self._refresh_chain()
         self._processed_files.clear()
         
         # Reload all documents

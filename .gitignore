@@ -9,10 +9,10 @@ __pycache__/
 *$py.class
 .venv/
 venv/
-.env/
 
 # Vector Database
 chroma_db/
+waha_sessions/
 
 # Documents (optional - uncomment to ignore)
 # documents/*.pdf

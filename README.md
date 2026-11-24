@@ -1,240 +1,192 @@
-# RAG WhatsApp Bot
+# RAG WhatsApp Bot (WAHA)
 
-A Retrieval-Augmented Generation (RAG) chatbot integrated with WhatsApp via Twilio. The bot answers questions based on PDF documents you provide, with automatic re-indexing when documents change.
+A personal Retrieval-Augmented Generation assistant that lives in your own
+WhatsApp **"Message Yourself"** chat. You send a question to yourself, the bot
+replies in the same chat using your PDF documents as context.
+
+No Twilio, no Meta business verification, no per-message fees.
+
+```
+Your phone ── WhatsApp ──▶ WAHA (Docker, port 3000)
+                              │  webhook + REST
+                              ▼
+                     FastAPI bot (port 8000)
+                     ├─ LangChain RAG (Chroma + local embeddings)
+                     ├─ OpenRouter LLM (NVIDIA Nemotron free tier)
+                     └─ documents/ watched for changes
+```
 
 ## Features
 
-- 🤖 **WhatsApp Integration** via Twilio WhatsApp API
-- 📄 **PDF Document Ingestion** with automatic text extraction
-- 🔍 **RAG Pipeline** using OpenAI embeddings and GPT-4o-mini
-- 🔄 **Auto-reindexing** - watches documents folder for changes
-- 💬 **Slash Commands** - `/help`, `/stats`, `/reload`
-- 🐳 **Docker Support** for easy deployment
-- 📊 **Health Checks** and monitoring endpoints
+- 💬 **Self-chat only** – replies in "Message Yourself", ignores everyone else
+- 🔁 **Loop-proof** – the bot never answers its own answer (see below)
+- 📄 **PDF ingestion** – drop PDFs in `documents/`, auto re-indexed
+- 🧠 **100 % free stack** – local ONNX embeddings + OpenRouter free model
+- ⚡ **Async** – webhook returns instantly, answer is generated in background
+- ⌨️ **Typing indicator**, long answers split into readable chunks
+- 🔐 **Optional** WAHA API key + HMAC webhook signature
+- 🐳 **Two containers**: `waha` + `bot`
 
-## Quick Start
-
-### 1. Prerequisites
-
-- Python 3.11+
-- Twilio Account (free tier works for testing)
-- OpenAI API Key
-
-### 2. Setup
+## Quick start (Docker)
 
 ```bash
-# Clone/navigate to project
-cd whatsapp_bot
-
-# Create virtual environment
-python -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Configure environment
 cp .env.example .env
-# Edit .env with your credentials
-```
+# put your OpenRouter key in OPENROUTER_API_KEY
 
-### 3. Configure `.env`
-
-**Option A: Using OpenAI directly**
-```env
-# Twilio (get from https://console.twilio.com)
-TWILIO_ACCOUNT_SID=ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-TWILIO_AUTH_TOKEN=your_auth_token
-TWILIO_WHATSAPP_NUMBER=whatsapp:+14155238886  # Twilio sandbox number
-
-# OpenAI (get from https://platform.openai.com/api-keys)
-LLM_PROVIDER=openai
-OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-LLM_MODEL=gpt-4o-mini
-
-# Webhook URL (use ngrok for local development)
-WEBHOOK_URL=https://your-domain.ngrok-free.app
-```
-
-**Option B: Using OpenRouter (access to 100+ models including Claude, GPT, Llama, etc.)**
-```env
-# Twilio (get from https://console.twilio.com)
-TWILIO_ACCOUNT_SID=ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-TWILIO_AUTH_TOKEN=your_auth_token
-TWILIO_WHATSAPP_NUMBER=whatsapp:+14155238886  # Twilio sandbox number
-
-# OpenRouter (get from https://openrouter.ai/keys)
-LLM_PROVIDER=openrouter
-OPENROUTER_API_KEY=sk-or-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-LLM_MODEL=anthropic/claude-3-haiku  # Or any model from https://openrouter.ai/models
-
-# Webhook URL (use ngrok for local development)
-WEBHOOK_URL=https://your-domain.ngrok-free.app
-```
-
-> **Note:** You only need **one** of `OPENAI_API_KEY` or `OPENROUTER_API_KEY` depending on your `LLM_PROVIDER` choice.
-
-### 4. Add Documents
-
-Place PDF files in the `documents/` folder:
-
-```bash
 mkdir -p documents
-cp your-docs/*.pdf documents/
+cp ~/my-docs/*.pdf documents/
+
+docker compose up -d --build
 ```
 
-### 5. Run Locally
+### 1. Pair WhatsApp
+
+Open the WAHA dashboard and scan the QR with your phone
+(WhatsApp → Settings → Linked devices):
+
+```
+http://localhost:3000/dashboard     # login: admin / waha (from .env)
+```
+
+Or grab the QR from the bot: `http://localhost:8000/qr`
+
+Session state lives in `./waha_sessions`, so you only pair once.
+
+### 2. Use it
+
+Open WhatsApp → **Message Yourself** (Saved Messages) → send a question.
+
+```
+You:  How many vacation days do I get?
+Bot:  Employees receive 25 paid vacation days per year.
+```
+
+Commands:
+
+| Command | Action |
+|---------|--------|
+| `/help` | show help |
+| `/stats` | chunks + files indexed |
+| `/reload` | rebuild the index now |
+| `/ping` | liveness check |
+
+The bot also re-indexes automatically when PDFs are added, changed or removed.
+
+## Running the bot without Docker
+
+WAHA in Docker, bot on the host:
 
 ```bash
-# Option 1: Direct Python
+docker run -d --name waha -p 3000:3000 \
+  -e WHATSAPP_DEFAULT_ENGINE=NOWEB \
+  -e WHATSAPP_HOOK_URL=http://host.docker.internal:8000/webhook \
+  -e WHATSAPP_HOOK_EVENTS=message,message.any \
+  --add-host host.docker.internal:host-gateway \
+  -v "$PWD/waha_sessions:/app/.sessions" \
+  devlikeapro/waha:latest
+
+source .venv/bin/activate
+pip install -r requirements.txt
 python run.py
-
-# Option 2: With ngrok (for Twilio webhook)
-ngrok http 8000
-# Update WEBHOOK_URL in .env with the ngrok HTTPS URL
 ```
 
-### 6. Configure Twilio Webhook
+## Configuration
 
-1. Go to [Twilio Console > Messaging > Try it out > Send a WhatsApp message](https://console.twilio.com/us1/develop/sms/try-it-out/whatsapp-learn)
-2. Or configure your WhatsApp Business number:
-   - Go to **Phone Numbers > Manage > Active Numbers**
-   - Click your WhatsApp number
-   - Set **A Message Comes In** webhook to: `https://your-domain.com/webhook`
-   - Method: **POST**
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `WAHA_BASE_URL` | `http://localhost:3000` | WAHA REST endpoint |
+| `WAHA_SESSION` | `default` | WAHA session name |
+| `WAHA_API_KEY` | – | sent as `X-Api-Key` when set |
+| `WAHA_HMAC_KEY` | – | verify `X-Hmac-Signature` (SHA512) |
+| `WAHA_SELF_CHAT_ONLY` | `true` | answer only in "Message Yourself" |
+| `LLM_PROVIDER` | `openrouter` | `openrouter` or `openai` |
+| `LLM_MODEL` | `nvidia/nemotron-3-ultra-550b-a55b:free` | any OpenRouter model |
+| `OPENROUTER_API_KEY` | – | required for `openrouter` |
+| `EMBEDDING_PROVIDER` | `local` | `local` (free) or `openai` |
+| `CHUNK_SIZE` / `CHUNK_OVERLAP` | `1000` / `200` | splitting |
+| `TOP_K_RESULTS` | `4` | chunks retrieved per question |
+| `SYSTEM_PROMPT` | see `.env.example` | assistant behaviour |
 
-## Usage
+### Why local embeddings?
 
-### WhatsApp Commands
+OpenRouter serves **chat completions only** – it has no `/embeddings` endpoint.
+The default backend is the ONNX MiniLM model bundled with ChromaDB
+(~80 MB, downloaded once, then offline). No OpenAI key needed.
 
-| Command | Description |
-|---------|-------------|
-| `/help` | Show help message |
-| `/stats` | Show document index statistics |
-| `/reload` | Manually rebuild the document index |
+## How the echo loop is avoided
 
-### Ask Questions
+In the self-chat both your question and the bot's reply are `fromMe: true`, so a
+naive bot would keep answering itself. This project:
 
-Just send any question! The bot will search your documents and answer based on their content.
+1. fingerprints every outgoing text **before** the HTTP call to WAHA, so the
+   echo cannot win a race against the API response;
+2. remembers the message ids WAHA returns from `sendText`;
+3. deduplicates inbound message ids (WAHA emits `message` and `message.any`,
+   and retries on failures);
+4. only answers messages whose chat id is your own JID.
 
-## Project Structure
-
-```
-whatsapp_bot/
-├── main.py              # FastAPI application & webhook
-├── config.py            # Configuration management
-├── rag.py               # RAG system (documents, embeddings, QA)
-├── watcher.py           # File system watcher for auto-reindex
-├── whatsapp.py          # Twilio WhatsApp integration
-├── run.py               # Entry point with validation
-├── test_rag.py          # Test script for RAG system
-├── requirements.txt     # Python dependencies
-├── .env.example         # Environment template
-├── Dockerfile           # Docker image definition
-├── docker-compose.yml   # Docker Compose for deployment
-├── documents/           # Put your PDF files here
-└── chroma_db/           # Vector database (auto-created)
-```
-
-## Deployment
-
-### Docker (Recommended)
-
-```bash
-# Build and run
-docker-compose up -d --build
-
-# View logs
-docker-compose logs -f
-
-# Stop
-docker-compose down
-```
-
-### Production Considerations
-
-1. **Use a reverse proxy** (nginx, Traefik) with SSL
-2. **Set `WEBHOOK_URL`** to your public HTTPS endpoint
-3. **Monitor logs** for errors
-4. **Backup `chroma_db/`** periodically
-5. **Consider using a managed vector DB** (Pinecone, Weaviate) for scale
-
-## API Endpoints
+## API
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/` | GET | Health check |
-| `/health` | GET | Detailed health status |
-| `/webhook` | POST | Twilio WhatsApp webhook |
-| `/stats` | GET | RAG index statistics |
-| `/reload` | POST | Rebuild document index |
-| `/send` | POST | Send a WhatsApp message (testing) |
+| `/` | GET | liveness |
+| `/health` | GET | RAG + WAHA session status |
+| `/webhook` | POST | WAHA webhook (HMAC verified when configured) |
+| `/webhook/test?message=...` | POST | answer without WhatsApp |
+| `/stats` | GET | index statistics |
+| `/reload` | POST | rebuild index |
+| `/send?chat_id=...&message=...` | POST | send a message via WAHA |
+| `/qr` | GET | pairing QR (PNG proxy) |
+| `/session`, `/session/start` | GET/POST | WAHA session state |
 
-## Customization
+## Project structure
 
-### Change Model
-
-**Via `.env` (recommended):**
-```env
-# For OpenAI
-LLM_PROVIDER=openai
-LLM_MODEL=gpt-4o-mini
-
-# For OpenRouter - choose from 100+ models at https://openrouter.ai/models
-LLM_PROVIDER=openrouter
-LLM_MODEL=anthropic/claude-3-haiku
-# Other examples:
-# LLM_MODEL=openai/gpt-4o
-# LLM_MODEL=meta-llama/llama-3.1-8b-instruct
-# LLM_MODEL=google/gemini-flash-1.5
 ```
-
-**Or edit `rag.py` directly:**
-```python
-self.llm = ChatOpenAI(
-    model="gpt-4o",  # or any model supported by your provider
-    temperature=0,
-    openai_api_key=config.OPENAI_API_KEY
-)
-```
-
-### Adjust Chunking
-
-Edit `.env` or `config.py`:
-```env
-CHUNK_SIZE=1000
-CHUNK_OVERLAP=200
-TOP_K_RESULTS=4
-```
-
-### Custom System Prompt
-
-Edit `.env`:
-```env
-SYSTEM_PROMPT=You are a specialized assistant for [domain]. Answer based only on provided context.
+whatsapp_bot/
+├── main.py            # FastAPI webhook + self-chat routing
+├── waha.py            # WAHA client, echo/duplicate protection
+├── rag.py             # Chroma retriever + LangChain chain
+├── embeddings.py      # local ONNX or OpenAI embeddings
+├── watcher.py         # auto re-index on file changes
+├── config.py          # environment configuration
+├── run.py             # preflight checks + uvicorn
+├── test_rag.py        # RAG smoke test (no WhatsApp)
+├── Dockerfile
+├── docker-compose.yml # waha + bot
+├── documents/         # your PDFs
+├── chroma_db/         # vector index (generated)
+└── waha_sessions/     # WhatsApp session (generated)
 ```
 
 ## Troubleshooting
 
-### "RAG system not initialized"
-- Check your API key is valid (OpenAI or OpenRouter based on `LLM_PROVIDER`)
-- Check logs for initialization errors
-- For OpenRouter: verify model name exists at https://openrouter.ai/models
+**QR never appears** – check `docker compose logs waha`. Try another engine:
+set `WHATSAPP_DEFAULT_ENGINE=GOWS` (or `WEBJS`) in `docker-compose.yml` and
+restart; the engine determines which WhatsApp protocol implementation is used.
 
-### Twilio webhook not receiving messages
-- Ensure `WEBHOOK_URL` is publicly accessible (use ngrok locally)
-- Verify Twilio webhook URL matches exactly: `https://your-domain.com/webhook`
-- Check Twilio debugger for errors
+**Session says `SCAN_QR_CODE` / `FAILED`** – `POST /session/start` (or restart
+the WAHA container), then rescan from the dashboard.
 
-### Documents not indexing
-- Ensure PDFs are in `documents/` folder
-- Check file permissions
-- Run `python test_rag.py` to diagnose
+**Bot never replies in the self-chat** – WAHA must send `fromMe` events, which
+requires `WHATSAPP_HOOK_EVENTS` to include `message.any` (already set).
+Check `docker compose logs bot` for `Question from ...` lines.
 
-### "Missing configuration" error
-- Copy `.env.example` to `.env`
-- Fill in all required values
+**`webhook` rejects with 401** – `WAHA_HMAC_KEY` is set in one service but not
+the other. Remove it or set it in both.
+
+**Answers stop with HTTP 429** – free OpenRouter models are rate limited.
+Switch `LLM_MODEL` to another `:free` model or add credits.
+
+**Empty answers / wrong language** – the local MiniLM embedder is tuned for
+English; use `EMBEDDING_PROVIDER=openai` for multilingual corpora.
+
+## Security
+
+- `.env` and `waha_sessions/` are git-ignored – never commit them.
+- Set `WAHA_API_KEY` and `WAHA_HMAC_KEY` before exposing port 3000 publicly.
+- Change the dashboard password (`WAHA_DASHBOARD_PASSWORD`).
+- Keep `WAHA_SELF_CHAT_ONLY=true` so the bot never replies to other people.
 
 ## License
 
-MIT License - feel free to use and modify!
+MIT

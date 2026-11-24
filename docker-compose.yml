@@ -1,32 +1,48 @@
-version: '3.8'
-
 services:
+  # ---------------------------------------------------------------- WhatsApp
+  waha:
+    image: devlikeapro/waha:latest
+    container_name: waha
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      WHATSAPP_DEFAULT_ENGINE: NOWEB
+      # Deliver every message event to the bot. `message.any` is required so
+      # that messages you send to yourself (fromMe) reach the bot as well.
+      WHATSAPP_HOOK_URL: http://bot:8000/webhook
+      WHATSAPP_HOOK_EVENTS: message,message.any
+      WHATSAPP_API_KEY: ${WAHA_API_KEY:-}
+      WHATSAPP_HOOK_HMAC_KEY: ${WAHA_HMAC_KEY:-}
+      WHATSAPP_RESTART_ALL_SESSIONS: "True"
+      WAHA_DASHBOARD_USERNAME: ${WAHA_DASHBOARD_USERNAME:-admin}
+      WAHA_DASHBOARD_PASSWORD: ${WAHA_DASHBOARD_PASSWORD:-waha}
+    volumes:
+      - ./waha_sessions:/app/.sessions
+    extra_hosts:
+      # Lets you run the bot on the host while WAHA stays in Docker.
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - bot
+
+  # -------------------------------------------------------------------- Bot
   bot:
     build: .
     container_name: rag-whatsapp-bot
+    restart: unless-stopped
     ports:
       - "8000:8000"
     env_file:
       - .env
+    environment:
+      # Inside the compose network WAHA is reachable by service name.
+      WAHA_BASE_URL: http://waha:3000
     volumes:
       - ./documents:/app/documents
       - ./chroma_db:/app/chroma_db
-    restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/', timeout=5)"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 10s
-
-  # Optional: ngrok for local development
-  # Uncomment and add your ngrok auth token to expose locally
-  # ngrok:
-  #   image: ngrok/ngrok:latest
-  #   command: http bot:8000
-  #   environment:
-  #     - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN}
-  #   ports:
-  #     - "4040:4040"
-  #   depends_on:
-  #     - bot
+      start_period: 40s
