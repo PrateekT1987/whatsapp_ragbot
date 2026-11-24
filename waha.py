@@ -92,6 +92,7 @@ class WAHAClient:
         self.api_key = config.WAHA_API_KEY
 
         self._me_id: Optional[str] = None
+        self._me_lid: Optional[str] = None
 
         # Echo protection: 10 minutes is far longer than a webhook round-trip.
         self._sent_bodies = _TTLCache(ttl_seconds=600)
@@ -152,7 +153,11 @@ class WAHAClient:
                 me_id = me_id.get("_serialized") or me_id.get("id")
             if isinstance(me_id, str) and me_id:
                 self._me_id = me_id
-                logger.info("Own WhatsApp id: %s", me_id)
+                # WAHA 2026 also provides a LID (lid field) which is the
+                # account-wide identifier used in message routing.
+                if isinstance(me.get("lid"), str):
+                    self._me_lid = me["lid"]
+                logger.info("Own WhatsApp id: %s (lid: %s)", me_id, self._me_lid)
                 return me_id
         except Exception as exc:  # noqa: BLE001 - never break the webhook
             logger.warning("Could not resolve own WhatsApp id: %s", exc)
@@ -168,6 +173,11 @@ class WAHAClient:
         me_id = await self.get_me_id()
         if me_id and _user_part(chat_id) == _user_part(me_id):
             return True
+
+        # Also compare against the LID if available.
+        if self._me_lid and chat_id:
+            if _user_part(chat_id) == _user_part(self._me_lid):
+                return True
 
         # Fallback for payloads without a resolvable session id: in the
         # self-chat sender and recipient are the same account.

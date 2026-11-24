@@ -1,5 +1,4 @@
 import os
-import shutil
 from pathlib import Path
 from typing import List, Optional
 import logging
@@ -173,12 +172,16 @@ class RAGSystem:
     def rebuild_index(self) -> int:
         """Rebuild the entire index from scratch."""
         logger.info("Rebuilding index...")
-        
-        # Clear the vector store
-        if config.CHROMA_PERSIST_DIR.exists():
-            shutil.rmtree(config.CHROMA_PERSIST_DIR)
+
+        # Delete the collection instead of the directory: chroma_db is a bind
+        # mount inside Docker, and rmtree() fails with EBUSY on mount points.
+        try:
+            self.vectorstore.delete_collection()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not delete Chroma collection: %s", exc)
+
         config.CHROMA_PERSIST_DIR.mkdir(parents=True, exist_ok=True)
-        
+
         # Reinitialize
         self.vectorstore = Chroma(
             persist_directory=str(config.CHROMA_PERSIST_DIR),
