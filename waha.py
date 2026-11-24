@@ -21,6 +21,7 @@ from typing import Any, Dict, Optional
 import httpx
 
 from config import config
+from cache import session_cache
 
 logger = logging.getLogger(__name__)
 
@@ -94,11 +95,23 @@ class WAHAClient:
         self._me_id: Optional[str] = None
         self._me_lid: Optional[str] = None
 
+        # Load cached session info
+        self._load_cached_session()
+
         # Echo protection: 10 minutes is far longer than a webhook round-trip.
         self._sent_bodies = _TTLCache(ttl_seconds=600)
         self._sent_ids = _TTLCache(ttl_seconds=600)
         # Duplicate webhook protection.
         self._seen_ids = _TTLCache(ttl_seconds=600)
+
+    def _load_cached_session(self) -> None:
+        """Load cached me_id and me_lid from disk."""
+        cached = session_cache.get_me_info(self.session)
+        if cached:
+            self._me_id = cached.get("me_id")
+            self._me_lid = cached.get("me_lid")
+            if self._me_id:
+                logger.info(f"Loaded cached session info for {self.session}: me_id={self._me_id}, me_lid={self._me_lid}")
 
     # ------------------------------------------------------------- helpers
     def _headers(self) -> dict[str, str]:
@@ -158,6 +171,8 @@ class WAHAClient:
                 if isinstance(me.get("lid"), str):
                     self._me_lid = me["lid"]
                 logger.info("Own WhatsApp id: %s (lid: %s)", me_id, self._me_lid)
+                # Persist to cache
+                session_cache.set_me_info(self.session, me_id, self._me_lid)
                 return me_id
         except Exception as exc:  # noqa: BLE001 - never break the webhook
             logger.warning("Could not resolve own WhatsApp id: %s", exc)
@@ -224,6 +239,14 @@ class WAHAClient:
         self.remember_outgoing(text, extract_message_id(data))
         logger.info("Sent reply to %s (%d chars)", chat_id, len(text))
         return True
+
+    async def send_chunk(self, chat_id: str, chunk: str) -> bool:
+        """Send a streaming chunk to WhatsApp.
+        
+        Note: This uses the same sendText API. For true streaming, you'd need
+        a different approach (e.g., sending to a buffer and flushing periodically).
+        """
+        return await self.send_text(chat_id, chunk)
 
     async def send_long_text(self, chat_id: str, text: str, limit: int = 3500) -> None:
         """Split long answers on paragraph/line boundaries for readability."""
@@ -296,6 +319,12 @@ class WAHAClient:
         except Exception as exc:  # noqa: BLE001
             logger.warning("Could not fetch QR: %s", exc)
         return None
+
+    def clear_cached_session(self) -> None:
+        """Clear cached session info (useful when session is restarted)."""
+        self._me_id = None
+        self._me_lid = None
+        session_cache.clear_session(self.session)
 
 
 def _split_message(text: str, limit: int) -> list[str]:

@@ -13,6 +13,7 @@ from config import config
 from rag import rag_system
 from waha import extract_message_id, waha
 from watcher import document_watcher
+from cache import query_cache
 
 logging.basicConfig(
     level=logging.INFO,
@@ -30,7 +31,9 @@ HELP_TEXT = (
     "• /help – this message\n"
     "• /stats – how many chunks/files are indexed\n"
     "• /reload – rebuild the index from the documents folder\n"
-    "• /ping – check that the bot is alive"
+    "• /ping – check that the bot is alive\n"
+    "• /cache – show cache statistics\n"
+    "• /cache clear – clear the query cache\n"
 )
 
 
@@ -51,20 +54,37 @@ async def _handle_command(text: str) -> str | None:
         if "error" in stats:
             return f"❌ Error reading stats: {stats['error']}"
         files = "\n".join(f"  • {f}" for f in stats.get("files", [])) or "  (none)"
+        vector_store = stats.get("vector_store", "unknown")
+        cache_stats = stats.get("cache", {})
+        cache_info = ""
+        if cache_stats:
+            cache_info = f"\n*Cache*\n  Enabled: {cache_stats.get('enabled')}\n  Exact: {cache_stats.get('exact_cache_size')}/{cache_stats.get('exact_cache_max')}\n  Disk: {cache_stats.get('disk_cache_size')}"
         return (
             f"📊 *Index*\n\n"
             f"Chunks: {stats.get('document_count', 0)}\n"
-            f"Files: {stats.get('processed_files', 0)}\n\n"
+            f"Files: {stats.get('processed_files', 0)}\n"
+            f"Vector Store: {vector_store}{cache_info}\n\n"
             f"*Sources*\n{files}"
         )
     if cmd == "/reload":
         try:
             count = await asyncio.to_thread(rag_system.rebuild_index)
-            return f"✅ Index rebuilt – {count} PDF file(s) processed."
+            # Clear cache on rebuild
+            query_cache.clear()
+            return f"✅ Index rebuilt – {count} PDF file(s) processed. Cache cleared."
         except Exception as exc:  # noqa: BLE001
             logger.exception("Reload failed")
             return f"❌ Reload failed: {exc}"
+    if cmd == "/cache":
+        return f"📦 *Cache Stats*\n\n{json.dumps(query_cache.stats(), indent=2)}"
+    if cmd == "/cache clear":
+        query_cache.clear()
+        return "✅ Query cache cleared."
     return None
+
+
+# Streaming state per chat
+_streaming_sessions: dict[str, list[str]] = {}
 
 
 async def process_message(payload: dict) -> None:
@@ -105,14 +125,24 @@ async def process_message(payload: dict) -> None:
         if reply is None:
             await waha.start_typing(chat_id)
             try:
-                reply = await asyncio.to_thread(rag_system.query, body)
+                if config.LLM_STREAMING:
+                    # Streaming mode: send tokens as they arrive
+                    async def send_chunk(cid: str, chunk: str) -> bool:
+                        return await waha.send_chunk(cid, chunk)
+                    
+                    reply = await rag_system.query_streaming(body, chat_id, send_chunk)
+                else:
+                    # Non-streaming mode (original behavior)
+                    reply = await asyncio.to_thread(rag_system.query, body)
             finally:
                 await waha.stop_typing(chat_id)
     except Exception as exc:  # noqa: BLE001
         logger.exception("Failed to answer message")
         reply = f"❌ Sorry, something went wrong: {exc}"
 
-    await waha.send_long_text(chat_id, reply)
+    # For non-streaming, send the full reply
+    if reply and not config.LLM_STREAMING:
+        await waha.send_long_text(chat_id, reply)
 
 
 @asynccontextmanager
@@ -227,6 +257,7 @@ async def get_stats():
 @app.post("/reload")
 async def reload_documents():
     count = await asyncio.to_thread(rag_system.rebuild_index)
+    query_cache.clear()
     return {"message": f"Rebuilt index with {count} document(s)", "count": count}
 
 

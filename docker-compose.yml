@@ -1,53 +1,117 @@
 services:
-  # ---------------------------------------------------------------- WhatsApp
-  waha:
-    image: devlikeapro/waha:latest
-    container_name: waha
+  # ================================================================ QDRANT (Vector DB)
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "6333:6333"
+    volumes:
+      - ./qdrant_data:/qdrant/storage
+    # Uncomment to enable Qdrant telemetry (optional)
+    # environment:
+    #   QDRANT__TELEMETRY_DISABLED: "true"
+
+  # ================================================================ PERSONAL
+  waha-personal:
+    image: devlikeapro/waha:latest
+    container_name: waha-personal
+    restart: unless-stopped
+    ports:
+      - "3001:3000"
     environment:
       WHATSAPP_DEFAULT_ENGINE: NOWEB
-      # Deliver every message event to the bot. `message.any` is required so
-      # that messages you send to yourself (fromMe) reach the bot as well.
-      WHATSAPP_HOOK_URL: http://bot:8000/webhook
+      WHATSAPP_HOOK_URL: http://bot-personal:8000/webhook
       WHATSAPP_HOOK_EVENTS: message,message.any
-      WAHA_API_KEY: ${WAHA_API_KEY:-}
-      WHATSAPP_HOOK_HMAC_KEY: ${WAHA_HMAC_KEY:-}
+      WAHA_API_KEY: ${WAHA_API_KEY_PERSONAL:-}
+      WHATSAPP_HOOK_HMAC_KEY: ${WAHA_HMAC_KEY_PERSONAL:-}
       WHATSAPP_RESTART_ALL_SESSIONS: "True"
-      # The QR is served by the bot at /qr; keep the console readable.
       WAHA_PRINT_QR: "false"
-      WAHA_DASHBOARD_USERNAME: ${WAHA_DASHBOARD_USERNAME:-admin}
-      # WAHA silently replaces well-known values ("waha", "admin", "123", ...)
-      # with a random password, so leave this empty to let WAHA generate and
-      # print one, or set a strong value in .env.
-      WAHA_DASHBOARD_PASSWORD: ${WAHA_DASHBOARD_PASSWORD:-}
+      WAHA_DASHBOARD_USERNAME: ${WAHA_DASHBOARD_USERNAME_PERSONAL:-admin}
+      WAHA_DASHBOARD_PASSWORD: ${WAHA_DASHBOARD_PASSWORD_PERSONAL:-}
     volumes:
-      - ./waha_sessions:/app/.sessions
+      - ./waha_sessions/personal:/app/.sessions
     extra_hosts:
-      # Lets you run the bot on the host while WAHA stays in Docker.
       - "host.docker.internal:host-gateway"
     depends_on:
-      - bot
+      - bot-personal
 
-  # -------------------------------------------------------------------- Bot
-  bot:
+  bot-personal:
     build: .
-    container_name: rag-whatsapp-bot
+    container_name: rag-whatsapp-bot-personal
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "8001:8000"
     env_file:
-      - .env
+      - .env.personal
     environment:
-      # Inside the compose network WAHA is reachable by service name.
-      WAHA_BASE_URL: http://waha:3000
+      WAHA_BASE_URL: http://waha-personal:3000
+      WAHA_SESSION: personal
+      # Vector store (qdrant or chroma)
+      VECTOR_STORE: ${VECTOR_STORE:-chroma}
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_COLLECTION: rag_documents_personal
     volumes:
-      - ./documents:/app/documents
-      - ./chroma_db:/app/chroma_db
+      - ./documents_personal:/app/documents
+      - ./chroma_db_personal:/app/chroma_db
+      - ./cache:/app/cache
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/', timeout=5)"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 40s
+    depends_on:
+      - qdrant
+
+  # ================================================================ WORK
+  waha-work:
+    image: devlikeapro/waha:latest
+    container_name: waha-work
+    restart: unless-stopped
+    ports:
+      - "3002:3000"
+    environment:
+      WHATSAPP_DEFAULT_ENGINE: NOWEB
+      WHATSAPP_HOOK_URL: http://bot-work:8000/webhook
+      WHATSAPP_HOOK_EVENTS: message,message.any
+      WAHA_API_KEY: ${WAHA_API_KEY_WORK:-}
+      WHATSAPP_HOOK_HMAC_KEY: ${WAHA_HMAC_KEY_WORK:-}
+      WHATSAPP_RESTART_ALL_SESSIONS: "True"
+      WAHA_PRINT_QR: "false"
+      WAHA_DASHBOARD_USERNAME: ${WAHA_DASHBOARD_USERNAME_WORK:-admin}
+      WAHA_DASHBOARD_PASSWORD: ${WAHA_DASHBOARD_PASSWORD_WORK:-}
+    volumes:
+      - ./waha_sessions/work:/app/.sessions
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - bot-work
+
+  bot-work:
+    build: .
+    container_name: rag-whatsapp-bot-work
+    restart: unless-stopped
+    ports:
+      - "8002:8000"
+    env_file:
+      - .env.work
+    environment:
+      WAHA_BASE_URL: http://waha-work:3000
+      WAHA_SESSION: work
+      # Vector store (qdrant or chroma)
+      VECTOR_STORE: ${VECTOR_STORE:-chroma}
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_COLLECTION: rag_documents_work
+    volumes:
+      - ./documents_work:/app/documents
+      - ./chroma_db_work:/app/chroma_db
+      - ./cache:/app/cache
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    depends_on:
+      - qdrant
