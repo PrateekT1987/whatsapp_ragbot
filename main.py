@@ -93,11 +93,12 @@ async def process_message(payload: dict) -> None:
         logger.debug("Ignoring own echoed message")
         return
 
-    chat_id = payload.get("chatId") or payload.get("from")
+    chat_id = payload.get("from") or payload.get("chatId")
     if not chat_id:
         return
 
-    logger.info("Question from %s: %s", chat_id, body[:120])
+    logger.info("Question from %s (chatId: %s): %s",
+                payload.get("from"), payload.get("chatId"), body[:120])
 
     try:
         reply = await _handle_command(body)
