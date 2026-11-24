@@ -10,8 +10,8 @@ __pycache__/
 .venv/
 venv/
 
-# Vector Database
-chroma_db/
+# Vector Database (Qdrant)
+qdrant_data/
 waha_sessions/
 
 # Documents (optional - uncomment to ignore)
@@ -39,3 +39,6 @@ htmlcov/
 dist/
 build/
 *.egg-info/
+
+# Cache
+cache/

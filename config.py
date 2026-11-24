@@ -23,7 +23,7 @@ class Config:
     OPENROUTER_BASE_URL: str = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
     LLM_MODEL: str = os.getenv("LLM_MODEL", "nvidia/nemotron-3-ultra-550b-a55b:free")
-    # Streaming: send tokens to WhatsApp as they arrive (requires WAHA + streaming LLM)
+    # Streaming: send tokens to WhatsApp as they arrive (requires OpenRouter/OpenAI streaming support)
     LLM_STREAMING: bool = os.getenv("LLM_STREAMING", "false").lower() in ("1", "true", "yes", "on")
 
     # ---------------------------------------------------------- Embeddings
@@ -31,15 +31,10 @@ class Config:
     EMBEDDING_PROVIDER: str = os.getenv("EMBEDDING_PROVIDER", "local")
     EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
 
-    # ---------------------------------------------------------- Vector Store
-    # "chroma" (local, simple) or "qdrant" (production, remote/local)
-    VECTOR_STORE: str = os.getenv("VECTOR_STORE", "chroma")
-    # Qdrant connection (for VECTOR_STORE=qdrant)
+    # ---------------------------------------------------------- Vector Store (Qdrant only)
     QDRANT_URL: str = os.getenv("QDRANT_URL", "http://localhost:6333")
     QDRANT_API_KEY: str = os.getenv("QDRANT_API_KEY", "")
     QDRANT_COLLECTION: str = os.getenv("QDRANT_COLLECTION", "rag_documents")
-    # Chroma (for VECTOR_STORE=chroma)
-    CHROMA_PERSIST_DIR: Path = Path(os.getenv("CHROMA_PERSIST_DIR", "./chroma_db"))
 
     # ---------------------------------------------------------- Caching
     # Enable semantic cache for query responses
@@ -82,8 +77,8 @@ class Config:
         if self.EMBEDDING_PROVIDER == "openai" and not self.OPENAI_API_KEY:
             missing.append("OPENAI_API_KEY (required for EMBEDDING_PROVIDER=openai)")
 
-        if self.VECTOR_STORE == "qdrant" and not self.QDRANT_URL:
-            missing.append("QDRANT_URL (required for VECTOR_STORE=qdrant)")
+        if not self.QDRANT_URL:
+            missing.append("QDRANT_URL")
 
         return missing
 

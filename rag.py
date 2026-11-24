@@ -1,4 +1,4 @@
-"""RAG system with vector store abstraction, caching, and streaming support."""
+"""RAG system with Qdrant vector store, caching, and streaming support."""
 
 import logging
 from pathlib import Path
@@ -16,7 +16,7 @@ from langchain_core.outputs import LLMResult
 
 from config import config
 from embeddings import get_embeddings
-from vectorstore import VectorStoreManager
+from vectorstore import QdrantVectorStoreManager
 from cache import query_cache
 
 logger = logging.getLogger(__name__)
@@ -75,14 +75,12 @@ class RAGSystem:
         # Streaming LLM (created on demand)
         self._streaming_llm: Optional[ChatOpenAI] = None
 
-        # Vector store manager (Chroma or Qdrant)
-        self.vector_manager = VectorStoreManager(
-            store_type=config.VECTOR_STORE,
+        # Vector store manager (Qdrant only)
+        self.vector_manager = QdrantVectorStoreManager(
             embeddings=self.embeddings,
-            persist_dir=config.CHROMA_PERSIST_DIR if config.VECTOR_STORE == "chroma" else None,
-            collection_name=config.QDRANT_COLLECTION if config.VECTOR_STORE == "qdrant" else "rag_documents",
-            qdrant_url=config.QDRANT_URL if config.VECTOR_STORE == "qdrant" else "",
-            qdrant_api_key=config.QDRANT_API_KEY if config.VECTOR_STORE == "qdrant" else "",
+            collection_name=config.QDRANT_COLLECTION,
+            qdrant_url=config.QDRANT_URL,
+            qdrant_api_key=config.QDRANT_API_KEY,
         )
 
         self.retriever = None
@@ -91,12 +89,7 @@ class RAGSystem:
 
     def initialize(self) -> None:
         """Initialize the vector store and QA chain."""
-        logger.info("Initializing RAG system...")
-
-        # Create persist directory if it doesn't exist (for Chroma)
-        if config.VECTOR_STORE == "chroma":
-            config.CHROMA_PERSIST_DIR.mkdir(parents=True, exist_ok=True)
-
+        logger.info("Initializing RAG system with Qdrant...")
         self._refresh_chain()
         logger.info("RAG system initialized")
 
@@ -238,13 +231,11 @@ class RAGSystem:
             logger.warning("Could not delete vector store collection: %s", exc)
 
         # Reinitialize vector manager
-        self.vector_manager = VectorStoreManager(
-            store_type=config.VECTOR_STORE,
+        self.vector_manager = QdrantVectorStoreManager(
             embeddings=self.embeddings,
-            persist_dir=config.CHROMA_PERSIST_DIR if config.VECTOR_STORE == "chroma" else None,
-            collection_name=config.QDRANT_COLLECTION if config.VECTOR_STORE == "qdrant" else "rag_documents",
-            qdrant_url=config.QDRANT_URL if config.VECTOR_STORE == "qdrant" else "",
-            qdrant_api_key=config.QDRANT_API_KEY if config.VECTOR_STORE == "qdrant" else "",
+            collection_name=config.QDRANT_COLLECTION,
+            qdrant_url=config.QDRANT_URL,
+            qdrant_api_key=config.QDRANT_API_KEY,
         )
 
         self._refresh_chain()
@@ -342,7 +333,7 @@ class RAGSystem:
                 "document_count": count,
                 "processed_files": len(self.vector_manager.get_processed_files()),
                 "files": [f.name for f in self.vector_manager.get_processed_files()],
-                "vector_store": config.VECTOR_STORE,
+                "vector_store": "qdrant",
                 "cache": query_cache.stats(),
             }
         except Exception as e:

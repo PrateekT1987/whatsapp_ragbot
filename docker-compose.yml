@@ -8,9 +8,6 @@ services:
       - "6333:6333"
     volumes:
       - ./qdrant_data:/qdrant/storage
-    # Uncomment to enable Qdrant telemetry (optional)
-    # environment:
-    #   QDRANT__TELEMETRY_DISABLED: "true"
 
   # ================================================================ PERSONAL
   waha-personal:
@@ -47,13 +44,10 @@ services:
     environment:
       WAHA_BASE_URL: http://waha-personal:3000
       WAHA_SESSION: personal
-      # Vector store (qdrant or chroma)
-      VECTOR_STORE: ${VECTOR_STORE:-chroma}
       QDRANT_URL: http://qdrant:6333
       QDRANT_COLLECTION: rag_documents_personal
     volumes:
       - ./documents_personal:/app/documents
-      - ./chroma_db_personal:/app/chroma_db
       - ./cache:/app/cache
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/', timeout=5)"]
@@ -99,13 +93,10 @@ services:
     environment:
       WAHA_BASE_URL: http://waha-work:3000
       WAHA_SESSION: work
-      # Vector store (qdrant or chroma)
-      VECTOR_STORE: ${VECTOR_STORE:-chroma}
       QDRANT_URL: http://qdrant:6333
       QDRANT_COLLECTION: rag_documents_work
     volumes:
       - ./documents_work:/app/documents
-      - ./chroma_db_work:/app/chroma_db
       - ./cache:/app/cache
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/', timeout=5)"]
