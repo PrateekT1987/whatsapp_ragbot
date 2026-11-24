@@ -12,11 +12,14 @@ services:
       # that messages you send to yourself (fromMe) reach the bot as well.
       WHATSAPP_HOOK_URL: http://bot:8000/webhook
       WHATSAPP_HOOK_EVENTS: message,message.any
-      WHATSAPP_API_KEY: ${WAHA_API_KEY:-}
+      WAHA_API_KEY: ${WAHA_API_KEY:-}
       WHATSAPP_HOOK_HMAC_KEY: ${WAHA_HMAC_KEY:-}
       WHATSAPP_RESTART_ALL_SESSIONS: "True"
       WAHA_DASHBOARD_USERNAME: ${WAHA_DASHBOARD_USERNAME:-admin}
-      WAHA_DASHBOARD_PASSWORD: ${WAHA_DASHBOARD_PASSWORD:-waha}
+      # WAHA silently replaces well-known values ("waha", "admin", "123", ...)
+      # with a random password, so leave this empty to let WAHA generate and
+      # print one, or set a strong value in .env.
+      WAHA_DASHBOARD_PASSWORD: ${WAHA_DASHBOARD_PASSWORD:-}
     volumes:
       - ./waha_sessions:/app/.sessions
     extra_hosts:

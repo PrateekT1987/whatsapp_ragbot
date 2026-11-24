@@ -32,6 +32,7 @@ Your phone ── WhatsApp ──▶ WAHA (Docker, port 3000)
 ```bash
 cp .env.example .env
 # put your OpenRouter key in OPENROUTER_API_KEY
+# set WAHA_API_KEY (openssl rand -hex 24) and a strong WAHA_DASHBOARD_PASSWORD
 
 mkdir -p documents
 cp ~/my-docs/*.pdf documents/
@@ -41,14 +42,23 @@ docker compose up -d --build
 
 ### 1. Pair WhatsApp
 
-Open the WAHA dashboard and scan the QR with your phone
+The session starts automatically; open the QR page and scan it with your phone
 (WhatsApp → Settings → Linked devices):
 
 ```
-http://localhost:3000/dashboard     # login: admin / waha (from .env)
+http://localhost:8000/qr            # QR rendered by the bot
 ```
 
-Or grab the QR from the bot: `http://localhost:8000/qr`
+Or use the WAHA dashboard:
+
+```
+http://localhost:3000/dashboard     # login with WAHA_DASHBOARD_USERNAME / _PASSWORD
+```
+
+> ⚠️ WAHA ignores well-known credentials such as `waha`, `admin` or `123` and
+> generates a random dashboard password instead (printed in
+> `docker compose logs waha`). Set a strong `WAHA_DASHBOARD_PASSWORD` in `.env`
+> before starting, or read the generated one from the logs.
 
 Session state lives in `./waha_sessions`, so you only pair once.
 
@@ -98,6 +108,7 @@ python run.py
 | `WAHA_SESSION` | `default` | WAHA session name |
 | `WAHA_API_KEY` | – | sent as `X-Api-Key` when set |
 | `WAHA_HMAC_KEY` | – | verify `X-Hmac-Signature` (SHA512) |
+| `WAHA_DASHBOARD_USERNAME` / `_PASSWORD` | `admin` / – | dashboard login (use a strong password) |
 | `WAHA_SELF_CHAT_ONLY` | `true` | answer only in "Message Yourself" |
 | `LLM_PROVIDER` | `openrouter` | `openrouter` or `openai` |
 | `LLM_MODEL` | `nvidia/nemotron-3-ultra-550b-a55b:free` | any OpenRouter model |
@@ -160,6 +171,21 @@ whatsapp_bot/
 
 ## Troubleshooting
 
+**`docker compose up` fails with `unknown shorthand flag: 'd' in -d`** – the
+Compose plugin is missing and Docker is parsing `-d` as one of its own flags.
+Install it (no sudo needed):
+
+```bash
+mkdir -p ~/.docker/cli-plugins
+curl -fSL "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-$(uname -m)" \
+  -o ~/.docker/cli-plugins/docker-compose
+chmod +x ~/.docker/cli-plugins/docker-compose
+docker compose version
+```
+
+Or system-wide: `sudo apt install docker-compose-plugin` (Debian/Ubuntu),
+`sudo dnf install docker-compose-plugin` (Fedora), `sudo pacman -S docker-compose` (Arch).
+
 **QR never appears** – check `docker compose logs waha`. Try another engine:
 set `WHATSAPP_DEFAULT_ENGINE=GOWS` (or `WEBJS`) in `docker-compose.yml` and
 restart; the engine determines which WhatsApp protocol implementation is used.
@@ -170,6 +196,12 @@ the WAHA container), then rescan from the dashboard.
 **Bot never replies in the self-chat** – WAHA must send `fromMe` events, which
 requires `WHATSAPP_HOOK_EVENTS` to include `message.any` (already set).
 Check `docker compose logs bot` for `Question from ...` lines.
+
+**`/session` shows `http_status: 401` (WAHA unreachable)** – the bot's
+`WAHA_API_KEY` does not match WAHA's. If the key is empty WAHA generates a
+random one on every start; set a fixed key in `.env`, or set
+`WAHA_NO_API_KEY=true` on the `waha` service for localhost-only use. Apply it
+with `docker compose up -d --force-recreate waha bot`.
 
 **`webhook` rejects with 401** – `WAHA_HMAC_KEY` is set in one service but not
 the other. Remove it or set it in both.
