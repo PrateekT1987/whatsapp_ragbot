@@ -2,6 +2,8 @@
 .env
 .env.local
 .env.*.local
+.env.personal
+.env.work
 
 # Python
 __pycache__/
@@ -16,6 +18,9 @@ waha_sessions/
 
 # Documents (optional - uncomment to ignore)
 # documents/*.pdf
+# Per-session document folders
+documents_personal/
+documents_work/
 
 # Logs
 *.log

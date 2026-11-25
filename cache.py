@@ -32,10 +32,16 @@ class QueryCache:
         self.cache_ttl = config.CACHE_TTL
 
     def _make_key(self, question: str) -> str:
-        """Create a normalized cache key from the question."""
+        """Create a normalized cache key from the question.
+
+        The WAHA session name is part of the key so that bots sharing a cache
+        directory (the Compose setup mounts ./cache into every bot) never serve
+        each other's answers.
+        """
         # Normalize: lowercase, strip, remove extra whitespace
         normalized = " ".join(question.lower().strip().split())
-        return hashlib.sha256(normalized.encode()).hexdigest()
+        scoped = f"{config.WAHA_SESSION}:{normalized}"
+        return hashlib.sha256(scoped.encode()).hexdigest()
 
     def get(self, question: str) -> Optional[str]:
         """Get cached response for a question."""

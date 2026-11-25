@@ -1,7 +1,6 @@
 """RAG system with Qdrant vector store, caching, and streaming support."""
 
 import logging
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from langchain_community.document_loaders import PyPDFLoader
@@ -11,8 +10,6 @@ from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
-from langchain_core.callbacks import AsyncCallbackHandler
-from langchain_core.outputs import LLMResult
 
 from config import config
 from embeddings import get_embeddings
@@ -20,27 +17,6 @@ from vectorstore import QdrantVectorStoreManager
 from cache import query_cache
 
 logger = logging.getLogger(__name__)
-
-
-class StreamingCallbackHandler(AsyncCallbackHandler):
-    """Callback handler for streaming LLM tokens."""
-
-    def __init__(self):
-        self.tokens: List[str] = []
-        self.done = False
-
-    async def on_llm_new_token(self, token: str, **kwargs) -> None:
-        self.tokens.append(token)
-
-    async def on_llm_end(self, response: LLMResult, **kwargs) -> None:
-        self.done = True
-
-    async def on_llm_error(self, error: Exception, **kwargs) -> None:
-        self.done = True
-        logger.error(f"LLM streaming error: {error}")
-
-    def get_response(self) -> str:
-        return "".join(self.tokens)
 
 
 class RAGSystem:
@@ -149,21 +125,16 @@ class RAGSystem:
         )
 
     def _create_streaming_chain(self) -> Any:
-        """Create a streaming chain for token-by-token output."""
+        """Create a streaming chain for token-by-token output.
+
+        Retrieval happens in ``query_streaming`` so the retrieved context is
+        computed once and can also be used for caching.
+        """
         prompt = ChatPromptTemplate.from_messages([
             ("system", config.SYSTEM_PROMPT + "\n\nContext:\n{context}"),
             ("human", "{question}")
         ])
-
-        def format_docs(docs: List[Document]) -> str:
-            return "\n\n".join(doc.page_content for doc in docs)
-
-        streaming_llm = self._get_streaming_llm()
-        return (
-            {"context": self.retriever | format_docs, "question": RunnablePassthrough()}
-            | prompt
-            | streaming_llm
-        )
+        return prompt | self._get_streaming_llm()
 
     def load_documents(self, force_reload: bool = False) -> int:
         """Load all PDF documents from the documents folder."""
@@ -286,21 +257,38 @@ class RAGSystem:
 
         # Create streaming chain
         chain = self._create_streaming_chain()
-        callback = StreamingCallbackHandler()
+
+        # Coalesce tokens into readable bubbles instead of one per token.
+        flush_at = 160
 
         try:
-            # Get relevant documents first
+            # Retrieve once, then stream the answer for that context.
             docs = await self.retriever.ainvoke(question)
             context = "\n\n".join(doc.page_content for doc in docs)
 
-            # Stream the response
-            full_response = []
-            async for chunk in chain.astream({"context": context, "question": question}, config={"callbacks": [callback]}):
-                if chunk:
-                    full_response.append(chunk)
-                    # Send chunk to WhatsApp
-                    await send_chunk_callback(chat_id, chunk)
+            full_response: List[str] = []
+            pending: List[str] = []
 
+            async def flush() -> None:
+                if pending:
+                    await send_chunk_callback(chat_id, "".join(pending))
+                    pending.clear()
+
+            async for chunk in chain.astream({"context": context, "question": question}):
+                text = chunk.content if hasattr(chunk, "content") else str(chunk)
+                if not text:
+                    continue
+                full_response.append(text)
+                pending.append(text)
+                # Flush on size, paragraph break or sentence end.
+                if (
+                    sum(len(t) for t in pending) >= flush_at
+                    or "\n" in text
+                    or (len(pending) > 1 and text.rstrip().endswith((".", "!", "?")))
+                ):
+                    await flush()
+
+            await flush()
             response = "".join(full_response)
             
             # Cache the full response
@@ -314,16 +302,8 @@ class RAGSystem:
             return error_msg
 
     async def _send_cached_streaming(self, response: str, chat_id: str, send_chunk_callback) -> None:
-        """Send a cached response in simulated streaming chunks."""
-        # Split into words and send in small batches
-        words = response.split()
-        batch_size = 5
-        for i in range(0, len(words), batch_size):
-            chunk = " ".join(words[i:i+batch_size]) + " "
-            await send_chunk_callback(chat_id, chunk)
-            # Small delay to simulate streaming
-            import asyncio
-            await asyncio.sleep(0.05)
+        """Send a cached response in one go (no need to simulate streaming)."""
+        await send_chunk_callback(chat_id, response)
 
     def get_stats(self) -> dict:
         """Get statistics about the current index."""
