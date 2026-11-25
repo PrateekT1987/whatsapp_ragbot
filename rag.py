@@ -195,6 +195,9 @@ class RAGSystem:
         """Rebuild the entire index from scratch."""
         logger.info("Rebuilding index...")
 
+        # Answers generated from the old index must not survive a rebuild.
+        query_cache.clear()
+
         # Delete the collection
         try:
             self.vector_manager.delete_collection()
