@@ -193,8 +193,9 @@ async def root():
 async def health():
     stats = await asyncio.to_thread(rag_system.get_stats)
     session = await waha.session_status()
+    qdrant_ok = "error" not in stats
     return {
-        "status": "healthy",
+        "status": "healthy" if qdrant_ok else "degraded",
         "config_valid": not config.validate(),
         "rag": stats,
         "waha": {
@@ -204,15 +205,52 @@ async def health():
     }
 
 
+@app.get("/ready")
+async def ready():
+    """Readiness for Docker: the vector store and QA chain must work.
+
+    WAHA pairing is reported but not required, so an unpaired session does not
+    make the container permanently unhealthy.
+    """
+    chunks = 0
+    error = None
+    try:
+        chunks = await asyncio.to_thread(rag_system.vector_manager.count)
+    except Exception as exc:  # noqa: BLE001
+        error = str(exc)
+
+    chain_ok = rag_system.qa_chain is not None
+    is_ready = error is None and chain_ok
+    body = {
+        "ready": is_ready,
+        "qdrant": error is None,
+        "chunks": chunks,
+        "chain": chain_ok,
+    }
+    if error:
+        body["error"] = error
+    return JSONResponse(status_code=200 if is_ready else 503, content=body)
+
+
 @app.post("/webhook")
 async def waha_webhook(request: Request):
     raw = await request.body()
 
-    # Optional HMAC-SHA512 verification (set WAHA_HMAC_KEY in both services).
+    # Optional HMAC verification (set WAHA_HMAC_KEY in both services).
+    # WAHA sends `X-Webhook-Hmac` plus the algorithm in
+    # `X-Webhook-Hmac-Algorithm` (sha512 by default); `X-Hmac-Signature` is
+    # accepted for older/custom senders.
     if config.WAHA_HMAC_KEY:
-        signature = request.headers.get("X-Hmac-Signature", "")
+        signature = request.headers.get(
+            "X-Webhook-Hmac", request.headers.get("X-Hmac-Signature", "")
+        )
+        algorithm = request.headers.get("X-Webhook-Hmac-Algorithm", "sha512").lower()
+        digest = getattr(hashlib, algorithm, None)
+        if digest is None:
+            logger.warning("Rejected webhook with unsupported HMAC algorithm: %s", algorithm)
+            raise HTTPException(status_code=401, detail="Unsupported signature algorithm")
         expected = hmac.new(
-            config.WAHA_HMAC_KEY.encode("utf-8"), raw, hashlib.sha512
+            config.WAHA_HMAC_KEY.encode("utf-8"), raw, digest
         ).hexdigest()
         if not hmac.compare_digest(signature, expected):
             logger.warning("Rejected webhook with invalid HMAC signature")

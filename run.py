@@ -53,7 +53,12 @@ def main() -> None:
 
     import uvicorn
 
-    uvicorn.run("main:app", host=config.HOST, port=config.PORT, reload=True)
+    uvicorn.run(
+        "main:app",
+        host=config.HOST,
+        port=config.PORT,
+        reload=config.UVICORN_RELOAD,
+    )
 
 
 if __name__ == "__main__":

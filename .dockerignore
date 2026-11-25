@@ -4,10 +4,27 @@
 venv
 __pycache__
 *.pyc
+*.pyo
+
+# Secrets - never bake these into an image
 .env
+.env.*
+.env.local
+
+# Personal data / generated state
+documents
+documents_*
+*.pdf
+qdrant_data
+cache
+waha_sessions
 .chroma
 chroma_db
-waha_sessions
-documents
+chroma_db_*
+
+# Local noise
 *.log
 .pytest_cache
+.coverage
+htmlcov
+.DS_Store

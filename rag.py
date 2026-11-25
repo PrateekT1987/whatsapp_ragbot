@@ -1,6 +1,7 @@
 """RAG system with Qdrant vector store, caching, and streaming support."""
 
 import logging
+import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -62,7 +63,9 @@ class RAGSystem:
 
         self.retriever = None
         self.qa_chain = None
-        self.streaming_chain = None
+
+        # Serializes indexing/rebuilds between the watcher, the API and startup.
+        self._index_lock = threading.RLock()
 
     def initialize(self) -> None:
         """Initialize the vector store and QA chain."""
@@ -139,25 +142,43 @@ class RAGSystem:
 
     def load_documents(self, force_reload: bool = False) -> int:
         """Load all PDF documents from the documents folder."""
+        with self._index_lock:
+            return self._load_documents_locked(force_reload)
+
+    def _load_documents_locked(self, force_reload: bool = False) -> int:
         if not config.DOCUMENTS_PATH.exists():
             logger.warning(f"Documents path {config.DOCUMENTS_PATH} does not exist")
             return 0
 
         pdf_files = list(config.DOCUMENTS_PATH.glob("*.pdf"))
-        if not pdf_files:
-            logger.info("No PDF files found in documents folder")
-            return 0
 
         if not force_reload:
             indexed = {str(p) for p in self.vector_manager.get_processed_files()}
             present = {str(f) for f in pdf_files}
             removed = indexed - present
-            if removed:
-                logger.info(
-                    "Removed PDF(s) detected (%s); rebuilding index",
-                    ", ".join(Path(p).name for p in removed),
-                )
-                return self.rebuild_index()
+            for removed_path in removed:
+                pdf = Path(removed_path)
+                logger.info("PDF removed: %s; dropping its chunks", pdf.name)
+                try:
+                    self.vector_manager.delete_file(pdf)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Could not remove chunks for %s: %s", pdf.name, exc)
+                self.vector_manager.remove_processed_file(pdf)
+
+            # A changed PDF must have its old chunks removed before re-adding,
+            # otherwise the index keeps both the stale and the new text.
+            for pdf_file in pdf_files:
+                if self.vector_manager.has_record(pdf_file) and not self.vector_manager.is_processed(pdf_file):
+                    logger.info("PDF changed: %s; replacing its chunks", pdf_file.name)
+                    try:
+                        self.vector_manager.delete_file(pdf_file)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("Could not remove old chunks for %s: %s", pdf_file.name, exc)
+                    self.vector_manager.remove_processed_file(pdf_file)
+
+        if not pdf_files:
+            logger.info("No PDF files found in documents folder")
+            return 0
 
         new_files = [f for f in pdf_files if not self.vector_manager.is_processed(f) or force_reload]
 
@@ -168,6 +189,7 @@ class RAGSystem:
         logger.info(f"Processing {len(new_files)} PDF file(s)...")
 
         all_documents = []
+        loaded_files = []
         for pdf_file in new_files:
             try:
                 loader = PyPDFLoader(str(pdf_file))
@@ -179,7 +201,7 @@ class RAGSystem:
                     doc.metadata["file_path"] = str(pdf_file)
 
                 all_documents.extend(documents)
-                self.vector_manager.add_processed_file(pdf_file)
+                loaded_files.append(pdf_file)
                 logger.info(f"Loaded {len(documents)} pages from {pdf_file.name}")
             except Exception as e:
                 logger.error(f"Error loading {pdf_file}: {e}")
@@ -196,39 +218,43 @@ class RAGSystem:
         splits = text_splitter.split_documents(all_documents)
         logger.info(f"Split into {len(splits)} chunks")
 
-        # Add to vector store
+        # Add to vector store first: only files whose chunks were stored are
+        # recorded in the manifest, so a failed add is retried next time.
         self.vector_manager.add_documents(splits)
+        for pdf_file in loaded_files:
+            self.vector_manager.add_processed_file(pdf_file)
         self._refresh_chain()
         logger.info("Documents added to vector store")
 
-        return len(new_files)
+        return len(loaded_files)
 
     def rebuild_index(self) -> int:
         """Rebuild the entire index from scratch."""
-        logger.info("Rebuilding index...")
+        with self._index_lock:
+            logger.info("Rebuilding index...")
 
-        # Answers generated from the old index must not survive a rebuild.
-        query_cache.clear()
+            # Answers generated from the old index must not survive a rebuild.
+            query_cache.clear()
 
-        # Delete the collection
-        try:
-            self.vector_manager.delete_collection()
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Could not delete vector store collection: %s", exc)
+            # Delete the collection
+            try:
+                self.vector_manager.delete_collection()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Could not delete vector store collection: %s", exc)
 
-        # Reinitialize vector manager
-        self.vector_manager = QdrantVectorStoreManager(
-            embeddings=self.embeddings,
-            collection_name=config.QDRANT_COLLECTION,
-            qdrant_url=config.QDRANT_URL,
-            qdrant_api_key=config.QDRANT_API_KEY,
-        )
+            # Reinitialize vector manager
+            self.vector_manager = QdrantVectorStoreManager(
+                embeddings=self.embeddings,
+                collection_name=config.QDRANT_COLLECTION,
+                qdrant_url=config.QDRANT_URL,
+                qdrant_api_key=config.QDRANT_API_KEY,
+            )
 
-        self._refresh_chain()
-        self.vector_manager.clear_processed_files()
+            self._refresh_chain()
+            self.vector_manager.clear_processed_files()
 
-        # Reload all documents
-        return self.load_documents(force_reload=True)
+            # Reload all documents
+            return self.load_documents(force_reload=True)
 
     def query(self, question: str) -> str:
         """Query the RAG system (non-streaming, with caching)."""

@@ -1,21 +1,31 @@
 services:
   # ================================================================ QDRANT (Vector DB)
   qdrant:
-    image: qdrant/qdrant:latest
+    # Pinned to the version currently in use; `latest` can break the client API.
+    image: qdrant/qdrant@sha256:d277592721d2e3b73f9b797b53cf05e6a5bb2134f6d13fdbda4ca51782afbcac
     container_name: qdrant
     restart: unless-stopped
     ports:
-      - "6333:6333"
+      # Loopback only: the vector DB has no other protection.
+      - "127.0.0.1:6333:6333"
+    environment:
+      QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY:-}
     volumes:
       - ./qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/6333'"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   # ================================================================ PERSONAL
   waha-personal:
-    image: devlikeapro/waha:latest
+    image: devlikeapro/waha@sha256:2fc1787ddbd343ed2e7d59482846d1b22aa5ca134e29aa8d42d0e88c54e24779
     container_name: waha-personal
     restart: unless-stopped
     ports:
-      - "3001:3000"
+      - "127.0.0.1:3001:3000"
     environment:
       WHATSAPP_DEFAULT_ENGINE: NOWEB
       WHATSAPP_HOOK_URL: http://bot-personal:8000/webhook
@@ -38,13 +48,14 @@ services:
     container_name: rag-whatsapp-bot-personal
     restart: unless-stopped
     ports:
-      - "8001:8000"
+      - "127.0.0.1:8001:8000"
     env_file:
       - .env.personal
     environment:
       WAHA_BASE_URL: http://waha-personal:3000
       WAHA_SESSION: personal
       QDRANT_URL: http://qdrant:6333
+      QDRANT_API_KEY: ${QDRANT_API_KEY:-}
       QDRANT_COLLECTION: rag_documents_personal
       FASTEMBED_CACHE_PATH: /root/.cache/fastembed
     volumes:
@@ -52,21 +63,22 @@ services:
       - ./cache:/app/cache
       - fastembed_cache:/root/.cache/fastembed
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/', timeout=5)"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/ready', timeout=10)"]
       interval: 30s
-      timeout: 10s
+      timeout: 15s
       retries: 3
-      start_period: 40s
+      start_period: 120s
     depends_on:
-      - qdrant
+      qdrant:
+        condition: service_healthy
 
   # ================================================================ WORK
   waha-work:
-    image: devlikeapro/waha:latest
+    image: devlikeapro/waha@sha256:2fc1787ddbd343ed2e7d59482846d1b22aa5ca134e29aa8d42d0e88c54e24779
     container_name: waha-work
     restart: unless-stopped
     ports:
-      - "3002:3000"
+      - "127.0.0.1:3002:3000"
     environment:
       WHATSAPP_DEFAULT_ENGINE: NOWEB
       WHATSAPP_HOOK_URL: http://bot-work:8000/webhook
@@ -89,13 +101,14 @@ services:
     container_name: rag-whatsapp-bot-work
     restart: unless-stopped
     ports:
-      - "8002:8000"
+      - "127.0.0.1:8002:8000"
     env_file:
       - .env.work
     environment:
       WAHA_BASE_URL: http://waha-work:3000
       WAHA_SESSION: work
       QDRANT_URL: http://qdrant:6333
+      QDRANT_API_KEY: ${QDRANT_API_KEY:-}
       QDRANT_COLLECTION: rag_documents_work
       FASTEMBED_CACHE_PATH: /root/.cache/fastembed
     volumes:
@@ -103,12 +116,13 @@ services:
       - ./cache:/app/cache
       - fastembed_cache:/root/.cache/fastembed
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/', timeout=5)"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/ready', timeout=10)"]
       interval: 30s
-      timeout: 10s
+      timeout: 15s
       retries: 3
-      start_period: 40s
+      start_period: 120s
     depends_on:
-      - qdrant
+      qdrant:
+        condition: service_healthy
 volumes:
   fastembed_cache:

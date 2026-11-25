@@ -3,6 +3,7 @@
 import json
 import logging
 import re
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -203,14 +204,49 @@ class QdrantVectorStoreManager:
 
     # -------------------------------------------------------------- mutation
     def add_documents(self, documents: List[Document]) -> None:
-        """Add documents to the vector store."""
-        self.vectorstore.add_documents(documents)
+        """Add documents to the vector store.
+
+        Point ids are deterministic (file + chunk number), so re-running a
+        partially completed indexing pass overwrites points instead of
+        duplicating them after a crash.
+        """
+        counters: Dict[str, int] = {}
+        ids: List[str] = []
+        for doc in documents:
+            source = str(
+                doc.metadata.get("file_path") or doc.metadata.get("source") or ""
+            )
+            index = counters.get(source, 0)
+            counters[source] = index + 1
+            ids.append(str(uuid.uuid5(uuid.NAMESPACE_URL, f"{source}#{index}")))
+        self.vectorstore.add_documents(documents, ids=ids)
         self._all_docs = None
 
     def delete_collection(self) -> None:
         """Delete the entire collection."""
         self._client().delete_collection(collection_name=self.collection_name)
         self._all_docs = None
+
+    def delete_file(self, file_path) -> None:
+        """Remove every chunk that came from one PDF."""
+        from qdrant_client.http import models as qmodels
+
+        selector = qmodels.FilterSelector(
+            filter=qmodels.Filter(
+                must=[
+                    qmodels.FieldCondition(
+                        key="metadata.file_path",
+                        match=qmodels.MatchValue(value=str(file_path)),
+                    )
+                ]
+            )
+        )
+        self._client().delete(
+            collection_name=self.collection_name,
+            points_selector=selector,
+        )
+        self._all_docs = None
+        logger.info("Removed indexed chunks for %s", Path(file_path).name)
 
     def count(self) -> int:
         """Get the number of documents in the store."""
@@ -252,6 +288,15 @@ class QdrantVectorStoreManager:
             mtime = 0.0
         self._processed_files[str(path)] = mtime
         self._write_manifest()
+
+    def remove_processed_file(self, file_path) -> None:
+        """Forget a file (used when it changed or was deleted)."""
+        self._processed_files.pop(str(Path(file_path)), None)
+        self._write_manifest()
+
+    def has_record(self, file_path) -> bool:
+        """True when the file is in the manifest, regardless of mtime."""
+        return str(Path(file_path)) in self._processed_files
 
     def is_processed(self, file_path) -> bool:
         """True when the file is indexed and has not changed since."""

@@ -56,13 +56,20 @@ docker compose up -d --build
 
 Services started:
 
-| Service | Container | Host port | Purpose |
+| Service | Container | Host port (loopback) | Purpose |
 |---|---|---|---|
-| `qdrant` | `qdrant` | 6333 | vector database (HTTP + dashboard) |
+| `qdrant` | `qdrant` | 6333 | vector database (HTTP + dashboard, API key required) |
 | `waha-personal` | `waha-personal` | 3001 | WhatsApp session `personal` |
 | `bot-personal` | `rag-whatsapp-bot-personal` | 8001 | RAG bot for personal docs |
 | `waha-work` | `waha-work` | 3002 | WhatsApp session `work` |
 | `bot-work` | `rag-whatsapp-bot-work` | 8002 | RAG bot for work docs |
+
+All published ports bind to `127.0.0.1`. To use them from another machine,
+forward them instead of exposing them on the LAN:
+
+```bash
+ssh -L 8001:localhost:8001 -L 3001:localhost:3001 user@server
+```
 
 Only need one bot? Delete the `waha-work` / `bot-work` services from
 `docker-compose.yml` and the `work` variables from `.env`, or run the
@@ -128,11 +135,16 @@ from its documents folder.
 
 ### Documents → Qdrant
 
-1. `watcher.py` notices PDF changes in `DOCUMENTS_PATH`.
+1. `watcher.py` notices PDF changes in `DOCUMENTS_PATH` (debounced, and it
+   waits until a copied file stops changing).
 2. `rag.py` loads them with `PyPDFLoader`, splits them
-   (`CHUNK_SIZE` / `CHUNK_OVERLAP`) and embeds them locally.
+   (`CHUNK_SIZE` / `CHUNK_OVERLAP`) and embeds them locally. Only new or
+   changed files are embedded; a changed file's old chunks are deleted first,
+   and removing a PDF drops its chunks.
 3. Chunks are written to the Qdrant collection named by `QDRANT_COLLECTION`
-   (created automatically on first use, 384-dim cosine vectors).
+   (created automatically on first use, 384-dim cosine vectors) with
+   deterministic point ids, so an interrupted indexing pass resumes without
+   duplicating points.
 4. The indexed files and their modification times are recorded in
    `cache/indexed_<collection>.json`, so a restart does not re-embed the whole
    folder (and does not duplicate points).
@@ -214,7 +226,7 @@ These are consumed by `docker-compose.yml`, not by the bot:
 | `WAHA_BASE_URL` | `http://localhost:3000` | WAHA REST endpoint (compose overrides to the container name) |
 | `WAHA_SESSION` | `default` | WAHA session name |
 | `WAHA_API_KEY` | – | sent as `X-Api-Key` when set |
-| `WAHA_HMAC_KEY` | – | verify `X-Hmac-Signature` (SHA512) |
+| `WAHA_HMAC_KEY` | – | verify `X-Webhook-Hmac` (SHA512, algorithm from `X-Webhook-Hmac-Algorithm`) |
 | `WAHA_SELF_CHAT_ONLY` | `true` | answer only in "Message Yourself" |
 | `LLM_PROVIDER` | `openrouter` | `openrouter` or `openai` |
 | `LLM_MODEL` | `nvidia/nemotron-3-ultra-550b-a55b:free` | any OpenRouter model |
@@ -223,7 +235,7 @@ These are consumed by `docker-compose.yml`, not by the bot:
 | `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | API base |
 | `EMBEDDING_PROVIDER` | `local` | `local` (free) or `openai` |
 | `QDRANT_URL` | `http://localhost:6333` | Qdrant endpoint (compose uses `http://qdrant:6333`) |
-| `QDRANT_API_KEY` | – | only for Qdrant Cloud / secured instances |
+| `QDRANT_API_KEY` | – | Qdrant API key (required by the Compose stack) |
 | `QDRANT_COLLECTION` | `rag_documents` | **must be unique per bot** |
 | `FASTEMBED_CACHE_PATH` | `~/.cache/fastembed` | where the ONNX model is cached (Compose mounts a shared volume) |
 | `CACHE_ENABLED` | `true` | enable the query cache |
@@ -233,6 +245,7 @@ These are consumed by `docker-compose.yml`, not by the bot:
 | `DOCUMENTS_PATH` | `./documents` | PDF folder (compose mounts `documents_<name>`) |
 | `CHUNK_SIZE` / `CHUNK_OVERLAP` | `1000` / `200` | splitting |
 | `TOP_K_RESULTS` | `4` | chunks retrieved per question |
+| `UVICORN_RELOAD` | `false` | dev-only auto-restart on `.py` edits |
 | `SYSTEM_PROMPT` | see `.env.example` | assistant behaviour |
 
 `docker-compose.yml` overrides `DOCUMENTS_PATH` via the volume mount, so inside
@@ -248,7 +261,8 @@ rag_documents_personal   ← bot-personal
 rag_documents_work       ← bot-work
 ```
 
-- Web UI: `http://localhost:6333/dashboard`
+- Web UI: `http://localhost:6333/dashboard?api_key=<QDRANT_API_KEY>`
+  (the API key is in `.env`; plain HTTP requests without it return 401)
 - Data lives in `./qdrant_data/` (git-ignored) and survives rebuilds.
 - Collections are created automatically with 384-dim cosine vectors, matching
   the MiniLM embedder.
@@ -278,7 +292,8 @@ Pair at `http://localhost:8001/qr` and use the personal bot on its own. Set
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/` | GET | liveness |
-| `/health` | GET | RAG, cache and WAHA session status |
+| `/health` | GET | RAG, cache and WAHA session status (informational) |
+| `/ready` | GET | readiness: 200 when Qdrant + QA chain work, 503 otherwise |
 | `/webhook` | POST | WAHA webhook (HMAC verified when configured) |
 | `/webhook/test?message=...` | POST | answer without WhatsApp |
 | `/stats` | GET | index + cache statistics |
@@ -379,9 +394,9 @@ restart the WAHA container.
 requires `WHATSAPP_HOOK_EVENTS` to include `message.any` (already set).
 Check `docker compose logs bot-personal` for `Question from ...` lines.
 
-**Answers are stale after replacing a PDF** – run `/reload`. Automatic
-re-indexing handles new/changed files, but a manual rebuild is the reliable
-reset.
+**Answers are stale after replacing a PDF** – automatic re-indexing deletes a
+changed file's old chunks before re-embedding it. If the index still looks
+wrong, run `/reload` for a full rebuild.
 
 **`/session` shows `http_status: 401` (WAHA unreachable)** – the bot's
 `WAHA_API_KEY` does not match WAHA's. The WAHA container gets
@@ -403,14 +418,18 @@ English; use `EMBEDDING_PROVIDER=openai` for multilingual corpora.
 ## Security
 
 - `.env`, `.env.personal`, `.env.work`, `waha_sessions/`, `qdrant_data/` and
-  `cache/` are git-ignored – never commit them.
-- Set a WAHA API key and HMAC key per session before exposing port 3001/3002
-  publicly.
-- Change the dashboard passwords.
+  `cache/` are git-ignored – never commit them. `.dockerignore` also excludes
+  them, so secrets and PDFs are never copied into an image.
+- Every published port binds to `127.0.0.1`. Use SSH port forwarding for remote
+  access; do not change these to `0.0.0.0` unless you add a firewall.
+- Qdrant requires `QDRANT_API_KEY` (set in `.env`, injected into Qdrant and both
+  bots). Use the same key in the dashboard URL.
+- WAHA webhooks are HMAC-signed: `WAHA_HMAC_KEY_PERSONAL`/`_WORK` in `.env` must
+  match `WAHA_HMAC_KEY` in `.env.personal`/`.env.work`.
+- Set a strong WAHA API key and dashboard password per session.
 - Keep `WAHA_SELF_CHAT_ONLY=true` so the bot never replies to other people.
-- Qdrant has no auth in the default Compose setup; it binds to localhost-facing
-  port 6333. Put it behind a firewall or enable Qdrant's API key before exposing
-  it.
+- The bot's own HTTP API (`/send`, `/reload`, `/webhook/test`) has no
+  authentication; it is safe only because it is loopback-bound.
 
 ## License
 

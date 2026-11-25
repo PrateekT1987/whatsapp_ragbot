@@ -50,6 +50,10 @@ class Config:
     WEBHOOK_URL: str = os.getenv("WEBHOOK_URL", "")
     PORT: int = int(os.getenv("PORT", "8000"))
     HOST: str = os.getenv("HOST", "0.0.0.0")
+    # Development only: restart on .py changes. Never enable in production.
+    UVICORN_RELOAD: bool = os.getenv("UVICORN_RELOAD", "false").lower() in (
+        "1", "true", "yes", "on"
+    )
 
     # ----------------------------------------------------------------- RAG
     DOCUMENTS_PATH: Path = Path(os.getenv("DOCUMENTS_PATH", "./documents"))
