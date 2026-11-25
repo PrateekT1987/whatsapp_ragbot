@@ -1,13 +1,61 @@
-"""Qdrant vector store manager."""
+"""Qdrant vector store manager with hybrid (vector + keyword) retrieval."""
 
+import json
 import logging
-from typing import List, Optional
+import re
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
+from langchain_core.callbacks import CallbackManagerForRetrieverRun
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
+from langchain_core.retrievers import BaseRetriever
 from langchain_core.vectorstores import VectorStore
 
+from config import config
+
 logger = logging.getLogger(__name__)
+
+# Words that carry no retrieval signal on their own.
+_STOPWORDS = {
+    "the", "a", "an", "and", "or", "of", "for", "to", "in", "on", "at", "by",
+    "with", "from", "is", "are", "was", "were", "be", "been", "do", "does",
+    "did", "what", "who", "whom", "whose", "which", "when", "where", "why",
+    "how", "give", "gives", "tell", "show", "list", "find", "get", "me",
+    "my", "about", "details", "detail", "information", "info", "please",
+    "can", "could", "would", "should", "any", "all", "this", "that", "these",
+    "those", "there", "their", "has", "have", "had", "it", "its",
+}
+
+
+def _normalize(text: str) -> str:
+    """Lower-case and drop everything that is not a letter or digit.
+
+    PDF text extraction glues serial numbers to names ("15Abhishek.J.Patil"),
+    so substring matching on a punctuation-free string is far more reliable
+    than token matching.
+    """
+    return re.sub(r"[^a-z0-9]", "", text.lower())
+
+
+def _query_terms(query: str) -> List[str]:
+    terms: List[str] = []
+    for raw in re.split(r"[^A-Za-z0-9]+", query.lower()):
+        if len(raw) >= 3 and raw not in _STOPWORDS and raw not in terms:
+            terms.append(raw)
+    return terms
+
+
+class HybridRetriever(BaseRetriever):
+    """Retriever that merges keyword matches with vector similarity."""
+
+    manager: Any
+    k: int = 4
+
+    def _get_relevant_documents(
+        self, query: str, *, run_manager: Optional[CallbackManagerForRetrieverRun] = None
+    ) -> List[Document]:
+        return self.manager.search(query, k=self.k)
 
 
 class QdrantVectorStoreManager:
@@ -26,7 +74,20 @@ class QdrantVectorStoreManager:
         self.embeddings = embeddings
 
         self.vectorstore = self._create_qdrant(embeddings, collection_name, qdrant_url, qdrant_api_key)
-        self._processed_files: set = set()
+        self._all_docs: Optional[List[Document]] = None
+
+        # Persist which files are already indexed (path -> mtime). Without this
+        # every restart re-added all chunks, because langchain-qdrant generates
+        # a new id per insert.
+        config.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        self._manifest_path = config.CACHE_DIR / f"indexed_{collection_name}.json"
+        self._processed_files: Dict[str, float] = self._read_manifest()
+
+    # ------------------------------------------------------------- internals
+    def _client(self):
+        from qdrant_client import QdrantClient
+
+        return QdrantClient(url=self.qdrant_url, api_key=self.qdrant_api_key or None)
 
     def _create_qdrant(
         self,
@@ -39,10 +100,9 @@ class QdrantVectorStoreManager:
         # langchain-qdrant 0.1.x exports the store as `Qdrant`
         # (`QdrantVectorStore` is the name used from 0.2 onwards).
         from langchain_qdrant import Qdrant as QdrantVectorStore
-        from qdrant_client import QdrantClient
         from qdrant_client.http.models import Distance, VectorParams
 
-        client = QdrantClient(url=qdrant_url, api_key=qdrant_api_key or None)
+        client = self._client()
 
         # Ensure collection exists
         collections = client.get_collections().collections
@@ -59,39 +119,151 @@ class QdrantVectorStoreManager:
             embeddings=embeddings,
         )
 
-    def get_retriever(self, k: int = 4):
-        """Get a retriever with the specified k."""
-        return self.vectorstore.as_retriever(search_kwargs={"k": k})
+    def _load_all_documents(self) -> List[Document]:
+        """Load every stored chunk once, for lexical matching."""
+        if self._all_docs is not None:
+            return self._all_docs
 
+        client = self._client()
+        docs: List[Document] = []
+        offset = None
+        while True:
+            points, offset = client.scroll(
+                collection_name=self.collection_name,
+                limit=256,
+                offset=offset,
+                with_payload=True,
+                with_vectors=False,
+            )
+            for point in points:
+                payload = point.payload or {}
+                content = payload.get("page_content")
+                if not content:
+                    continue
+                docs.append(
+                    Document(
+                        page_content=content,
+                        metadata=payload.get("metadata") or {},
+                    )
+                )
+            if offset is None:
+                break
+
+        self._all_docs = docs
+        logger.info("Loaded %s chunk(s) for keyword search", len(docs))
+        return docs
+
+    def _keyword_search(self, query: str, limit: int = 2) -> List[Document]:
+        """Rank chunks by how many query terms they contain verbatim."""
+        terms = _query_terms(query)
+        if not terms:
+            return []
+
+        phrase = _normalize(" ".join(terms))
+        docs = self._load_all_documents()
+        required = 1 if len(terms) == 1 else 2
+
+        scored: List[Tuple[int, int, Document]] = []
+        for doc in docs:
+            haystack = _normalize(doc.page_content)
+            hits = sum(1 for term in terms if term in haystack)
+            if hits < required:
+                continue
+            # A chunk containing the whole phrase beats one with scattered terms.
+            phrase_hit = 1 if phrase and phrase in haystack else 0
+            scored.append((phrase_hit, hits, doc))
+
+        scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        return [doc for _, _, doc in scored[:limit]]
+
+    # -------------------------------------------------------------- retrieval
+    def search(self, query: str, k: int = 4) -> List[Document]:
+        """Hybrid search: keyword hits first, then vector similarity."""
+        results: List[Document] = []
+        seen: set = set()
+
+        for doc in self._keyword_search(query):
+            if doc.page_content not in seen:
+                seen.add(doc.page_content)
+                results.append(doc)
+
+        try:
+            for doc in self.vectorstore.similarity_search(query, k=k):
+                if doc.page_content not in seen:
+                    seen.add(doc.page_content)
+                    results.append(doc)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Vector search failed: %s", exc)
+
+        return results
+
+    def get_retriever(self, k: int = 4):
+        """Get a hybrid retriever with the specified k."""
+        return HybridRetriever(manager=self, k=k)
+
+    # -------------------------------------------------------------- mutation
     def add_documents(self, documents: List[Document]) -> None:
         """Add documents to the vector store."""
         self.vectorstore.add_documents(documents)
+        self._all_docs = None
 
     def delete_collection(self) -> None:
         """Delete the entire collection."""
-        from qdrant_client import QdrantClient
-        client = QdrantClient(url=self.qdrant_url, api_key=self.qdrant_api_key or None)
-        client.delete_collection(collection_name=self.collection_name)
+        self._client().delete_collection(collection_name=self.collection_name)
+        self._all_docs = None
 
     def count(self) -> int:
         """Get the number of documents in the store."""
-        from qdrant_client import QdrantClient
-        client = QdrantClient(url=self.qdrant_url, api_key=self.qdrant_api_key or None)
-        info = client.get_collection(collection_name=self.collection_name)
+        info = self._client().get_collection(collection_name=self.collection_name)
         return info.points_count
 
+    # ---------------------------------------------------------- file tracking
+    def _read_manifest(self) -> Dict[str, float]:
+        try:
+            data = json.loads(self._manifest_path.read_text())
+            if isinstance(data, dict):
+                return {str(k): float(v) for k, v in data.items()}
+        except FileNotFoundError:
+            pass
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not read index manifest: %s", exc)
+        return {}
+
+    def _write_manifest(self) -> None:
+        try:
+            self._manifest_path.write_text(json.dumps(self._processed_files))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not write index manifest: %s", exc)
+
     def clear_processed_files(self) -> None:
-        """Clear the set of processed files."""
+        """Forget which files are indexed (a rebuild is about to happen)."""
         self._processed_files.clear()
+        try:
+            self._manifest_path.unlink(missing_ok=True)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not remove index manifest: %s", exc)
 
     def add_processed_file(self, file_path) -> None:
-        """Add a file to the processed set."""
-        self._processed_files.add(file_path)
+        """Record a file as indexed, including its modification time."""
+        path = Path(file_path)
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            mtime = 0.0
+        self._processed_files[str(path)] = mtime
+        self._write_manifest()
 
     def is_processed(self, file_path) -> bool:
-        """Check if a file has been processed."""
-        return file_path in self._processed_files
+        """True when the file is indexed and has not changed since."""
+        path = Path(file_path)
+        recorded = self._processed_files.get(str(path))
+        if recorded is None:
+            return False
+        try:
+            return abs(path.stat().st_mtime - recorded) < 1.0
+        except OSError:
+            return False
 
-    def get_processed_files(self) -> set:
-        """Get the set of processed files."""
-        return self._processed_files
+    def get_processed_files(self) -> List[Path]:
+        """Files currently recorded as indexed."""
+        return [Path(p) for p in self._processed_files]

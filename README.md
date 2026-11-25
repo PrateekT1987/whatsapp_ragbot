@@ -28,6 +28,7 @@ namespace, so the two never mix context.
 - 📄 **PDF ingestion** – drop PDFs in the session's documents folder, auto re-indexed
 - 🧠 **100 % free stack** – local ONNX embeddings + OpenRouter free model
 - 🗄️ **Qdrant vector store** – persistent, fast, one collection per bot
+- 🔎 **Hybrid retrieval** – keyword matching for names/numbers plus vector similarity
 - ⚡ **Two-level query cache** – in-memory LRU + on-disk TTL cache
 - 🔀 **Optional streaming** – token-by-token delivery (off by default)
 - ⌨️ **Typing indicator**, long answers split into readable chunks
@@ -132,11 +133,18 @@ from its documents folder.
    (`CHUNK_SIZE` / `CHUNK_OVERLAP`) and embeds them locally.
 3. Chunks are written to the Qdrant collection named by `QDRANT_COLLECTION`
    (created automatically on first use, 384-dim cosine vectors).
+4. The indexed files and their modification times are recorded in
+   `cache/indexed_<collection>.json`, so a restart does not re-embed the whole
+   folder (and does not duplicate points).
 
 ### Query → answer
 
 1. The question is normalized and looked up in the cache (memory, then disk).
-2. On a miss, the top `TOP_K_RESULTS` chunks are retrieved from Qdrant.
+2. On a miss, retrieval is **hybrid**: chunks containing the query's key terms
+   verbatim are ranked first, then the top `TOP_K_RESULTS` vector-similarity
+   chunks are appended. Keyword matching is punctuation-insensitive, which
+   matters because PDF extraction glues serial numbers to names
+   (`15Abhishek.J.Patil`) and dots inside names defeat ordinary token search.
 3. The chunks become context for the chat prompt; OpenRouter generates the answer.
 4. The answer is cached and sent back to the self-chat.
 

@@ -1,6 +1,7 @@
 """RAG system with Qdrant vector store, caching, and streaming support."""
 
 import logging
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from langchain_community.document_loaders import PyPDFLoader
@@ -146,6 +147,17 @@ class RAGSystem:
         if not pdf_files:
             logger.info("No PDF files found in documents folder")
             return 0
+
+        if not force_reload:
+            indexed = {str(p) for p in self.vector_manager.get_processed_files()}
+            present = {str(f) for f in pdf_files}
+            removed = indexed - present
+            if removed:
+                logger.info(
+                    "Removed PDF(s) detected (%s); rebuilding index",
+                    ", ".join(Path(p).name for p in removed),
+                )
+                return self.rebuild_index()
 
         new_files = [f for f in pdf_files if not self.vector_manager.is_processed(f) or force_reload]
 
