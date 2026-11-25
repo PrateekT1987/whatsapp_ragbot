@@ -36,7 +36,9 @@ class QdrantVectorStoreManager:
         qdrant_api_key: str,
     ) -> VectorStore:
         """Create Qdrant vector store."""
-        from langchain_qdrant import QdrantVectorStore
+        # langchain-qdrant 0.1.x exports the store as `Qdrant`
+        # (`QdrantVectorStore` is the name used from 0.2 onwards).
+        from langchain_qdrant import Qdrant as QdrantVectorStore
         from qdrant_client import QdrantClient
         from qdrant_client.http.models import Distance, VectorParams
 
@@ -54,7 +56,7 @@ class QdrantVectorStoreManager:
         return QdrantVectorStore(
             client=client,
             collection_name=collection_name,
-            embedding=embeddings,
+            embeddings=embeddings,
         )
 
     def get_retriever(self, k: int = 4):

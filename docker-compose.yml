@@ -46,9 +46,11 @@ services:
       WAHA_SESSION: personal
       QDRANT_URL: http://qdrant:6333
       QDRANT_COLLECTION: rag_documents_personal
+      FASTEMBED_CACHE_PATH: /root/.cache/fastembed
     volumes:
       - ./documents_personal:/app/documents
       - ./cache:/app/cache
+      - fastembed_cache:/root/.cache/fastembed
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/', timeout=5)"]
       interval: 30s
@@ -95,9 +97,11 @@ services:
       WAHA_SESSION: work
       QDRANT_URL: http://qdrant:6333
       QDRANT_COLLECTION: rag_documents_work
+      FASTEMBED_CACHE_PATH: /root/.cache/fastembed
     volumes:
       - ./documents_work:/app/documents
       - ./cache:/app/cache
+      - fastembed_cache:/root/.cache/fastembed
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/', timeout=5)"]
       interval: 30s
@@ -106,3 +110,5 @@ services:
       start_period: 40s
     depends_on:
       - qdrant
+volumes:
+  fastembed_cache:

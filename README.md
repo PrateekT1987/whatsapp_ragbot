@@ -143,8 +143,10 @@ from its documents folder.
 ### Why local embeddings?
 
 OpenRouter serves **chat completions only** – it has no `/embeddings` endpoint.
-The default backend is the ONNX MiniLM model (`all-MiniLM-L6-v2`, ~80 MB,
-downloaded once and then cached in the image/container). No OpenAI key needed.
+The default backend is the ONNX MiniLM model (`all-MiniLM-L6-v2`, 384-dim, ~90 MB)
+run through [fastembed](https://github.com/qdrant/fastembed). It downloads once
+into a shared Docker volume (`fastembed_cache`), so container rebuilds don't
+download it again. No OpenAI key needed.
 
 ## Caching
 
@@ -215,6 +217,7 @@ These are consumed by `docker-compose.yml`, not by the bot:
 | `QDRANT_URL` | `http://localhost:6333` | Qdrant endpoint (compose uses `http://qdrant:6333`) |
 | `QDRANT_API_KEY` | – | only for Qdrant Cloud / secured instances |
 | `QDRANT_COLLECTION` | `rag_documents` | **must be unique per bot** |
+| `FASTEMBED_CACHE_PATH` | `~/.cache/fastembed` | where the ONNX model is cached (Compose mounts a shared volume) |
 | `CACHE_ENABLED` | `true` | enable the query cache |
 | `CACHE_TTL` | `3600` | cache entry lifetime (seconds) |
 | `CACHE_DIR` | `./cache` | disk-cache directory |
@@ -373,11 +376,12 @@ re-indexing handles new/changed files, but a manual rebuild is the reliable
 reset.
 
 **`/session` shows `http_status: 401` (WAHA unreachable)** – the bot's
-`WAHA_API_KEY` does not match WAHA's. If the key is empty WAHA generates a
-random one on every start; set a fixed key in `.env` and
-`.env.personal`/`.env.work`, or set `WAHA_NO_API_KEY=true` on the WAHA service
-for localhost-only use. Apply with
-`docker compose up -d --force-recreate waha-personal bot-personal`.
+`WAHA_API_KEY` does not match WAHA's. The WAHA container gets
+`WAHA_API_KEY_PERSONAL`/`_WORK` from `.env`, while the bot gets `WAHA_API_KEY`
+from `.env.personal`/`.env.work`; the two values must be identical. If the key
+is empty WAHA generates a random one on every start. Fix the per-bot value (or
+set `WAHA_NO_API_KEY=true` on the WAHA service for localhost-only use) and apply
+with `docker compose up -d --force-recreate waha-personal bot-personal`.
 
 **`webhook` rejects with 401** – `WAHA_HMAC_KEY` is set in one service but not
 the other. Remove it or set it in both.
