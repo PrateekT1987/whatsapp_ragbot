@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Validate configuration and start the RAG WhatsApp bot."""
 import sys
+import uvicorn
 from pathlib import Path
 
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 
-from config import config
+from config import config  # noqa: E402
 
 
 def check_config() -> bool:
@@ -75,8 +76,6 @@ def main() -> None:
     print("\n💬 First time: send any message to yourself in WhatsApp")
     print("   ('Message Yourself') and the bot will reply in the same chat.")
     print("\n" + "=" * 40)
-
-    import uvicorn
 
     uvicorn.run(
         "main:app",

@@ -6,7 +6,6 @@ import random
 import re
 import threading
 import time
-from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -824,7 +823,7 @@ class RAGSystem:
             query_cache.set(question, response)
             QUERY_RESULTS.labels(result="success").inc()
             return response
-        except Exception as exc:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             logger.exception("Error in streaming query")
             QUERY_RESULTS.labels(result="error").inc()
             if full:

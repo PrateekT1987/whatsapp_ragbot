@@ -2,7 +2,6 @@
 """Comprehensive unit tests for P1/P2 functionality."""
 
 import hashlib
-import json
 import os
 import sys
 import unittest
@@ -14,23 +13,23 @@ os.environ.setdefault("LLM_PROVIDER", "openrouter")
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from waha import (
+from waha import (  # noqa: E402
     _fingerprint,
     _is_self_chat_payload,
     _split_message,
     _user_part,
 )
-from cache import QueryCache
-from rag import (
+from cache import QueryCache  # noqa: E402
+from rag import (  # noqa: E402
     _format_sources,
     _is_rate_limit,
     _is_retryable,
     _retry_delay,
 )
-from main import verify_webhook_signature
-from vectorstore import _query_terms
-from formatting import to_whatsapp
-from langchain_core.documents import Document
+from main import verify_webhook_signature  # noqa: E402
+from vectorstore import _query_terms  # noqa: E402
+from formatting import to_whatsapp  # noqa: E402
+from langchain_core.documents import Document  # noqa: E402
 
 
 class FormattingTests(unittest.TestCase):

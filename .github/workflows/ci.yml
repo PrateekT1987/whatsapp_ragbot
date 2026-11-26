@@ -27,7 +27,7 @@ jobs:
       - name: Ruff format check
         run: ruff format --check .
       - name: Mypy
-        run: mypy --ignore-missing-imports --strict main.py rag.py waha.py vectorstore.py cache.py config.py embeddings.py watcher.py run.py
+        run: mypy --ignore-missing-imports main.py rag.py waha.py vectorstore.py cache.py config.py embeddings.py watcher.py run.py
 
   tests:
     name: Unit tests

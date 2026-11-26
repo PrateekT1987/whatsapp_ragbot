@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
 """Smoke test for the RAG pipeline (no WhatsApp/WAHA involved)."""
+import os
 import sys
 from pathlib import Path
+
+os.environ.setdefault("CACHE_DIR", "/tmp/rag-bot-test")
+os.environ.setdefault("OPENROUTER_API_KEY", "test-key")
+os.environ.setdefault("LLM_PROVIDER", "openrouter")
 
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 
-from config import config
-from rag import rag_system
+from config import config  # noqa: E402
+from rag import rag_system  # noqa: E402
 
 
 def main() -> int:

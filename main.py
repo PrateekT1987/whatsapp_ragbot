@@ -202,7 +202,7 @@ async def _handle_command(text: str, chat_id: str = "") -> str | None:
             lines.append(f"  • {f}")
         structured = stats.get("structured", {})
         if structured:
-            lines.append(f"\n📊 **Structured Data**")
+            lines.append("\n📊 **Structured Data**")  # noqa: F541
             lines.append(f"  Rows: {structured.get('total_rows', 0)}")
             for district, count in list(structured.get("districts", {}).items())[:10]:
                 lines.append(f"  {district}: {count}")
@@ -286,7 +286,8 @@ async def _handle_command(text: str, chat_id: str = "") -> str | None:
                 conn.execute("""
                     INSERT INTO feedback (chat_id, rating) VALUES (?, ?)
                 """, (chat_id, rating))
-            return f"👍 Thanks for the feedback!" if rating == "good" else "👎 Thanks, we'll improve."
+            return ("👍 Thanks for the feedback!" if rating == "good" 
+            else "👎 Thanks, we'll improve.")
         except Exception as exc:  # noqa: BLE001
             logger.warning("Feedback save failed: %s", exc)
             return "❌ Could not save feedback."
@@ -677,7 +678,7 @@ async def waha_webhook(request: Request):
 async def test_webhook(message: str, simulate: str = "self"):
     """Simulate a self-chat message without WhatsApp (useful for smoke tests)."""
     if simulate == "self":
-        payload = {"fromMe": True, "type": "text", "body": message}
+        _ = {"fromMe": True, "type": "text", "body": message}
         reply = await _handle_command(message, "test")
         if reply is None:
             reply = await asyncio.to_thread(rag_system.query, message, "test")
