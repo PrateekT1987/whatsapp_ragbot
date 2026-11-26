@@ -14,6 +14,7 @@ of a "Message Yourself" bot:
 import asyncio
 import hashlib
 import logging
+import random
 import time
 from collections import OrderedDict
 from typing import Any, Dict, Optional
@@ -22,8 +23,20 @@ import httpx
 
 from config import config
 from cache import session_cache
+from formatting import to_whatsapp
 
 logger = logging.getLogger(__name__)
+
+
+def _backoff(attempt: int, retry_after: Optional[str] = None) -> float:
+    """Exponential backoff with jitter, honouring a Retry-After header."""
+    if retry_after:
+        try:
+            return min(15.0, max(0.0, float(retry_after)))
+        except (TypeError, ValueError):
+            pass
+    base = min(8.0, 0.5 * (2 ** attempt))
+    return base + random.uniform(0, base)
 
 
 def _user_part(jid: Optional[str]) -> Optional[str]:
@@ -94,6 +107,7 @@ class WAHAClient:
 
         self._me_id: Optional[str] = None
         self._me_lid: Optional[str] = None
+        self._http: Optional[httpx.AsyncClient] = None
 
         # Load cached session info
         self._load_cached_session()
@@ -122,6 +136,83 @@ class WAHAClient:
 
     def _url(self, path: str) -> str:
         return f"{self.base_url}{path}"
+
+    def _client(self) -> httpx.AsyncClient:
+        """One pooled client for every call (no per-request TCP/TLS setup)."""
+        if self._http is None:
+            self._http = httpx.AsyncClient(
+                base_url=self.base_url,
+                headers=self._headers(),
+                timeout=httpx.Timeout(config.WAHA_TIMEOUT, connect=5.0),
+                limits=httpx.Limits(
+                    max_connections=20, max_keepalive_connections=10
+                ),
+            )
+        return self._http
+
+    async def aclose(self) -> None:
+        if self._http is not None:
+            await self._http.aclose()
+            self._http = None
+
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        retries: int = 0,
+        retry_timeouts: bool = False,
+        **kwargs,
+    ) -> httpx.Response:
+        """Request with bounded retries for transient failures.
+
+        Sends are not retried on a read timeout: the first attempt may already
+        have reached WhatsApp, and a retry would post the message twice.
+        """
+        attempts = max(0, retries) + 1
+        last_exc: Optional[Exception] = None
+
+        for attempt in range(attempts):
+            try:
+                resp = await self._client().request(method, path, **kwargs)
+                if (
+                    resp.status_code in (429, 500, 502, 503, 504)
+                    and attempt + 1 < attempts
+                ):
+                    delay = _backoff(attempt, resp.headers.get("Retry-After"))
+                    logger.warning(
+                        "WAHA %s %s -> %s; retrying in %.1fs",
+                        method, path, resp.status_code, delay,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                return resp
+            except (
+                httpx.ConnectError,
+                httpx.ReadError,
+                httpx.RemoteProtocolError,
+            ) as exc:
+                last_exc = exc
+                if attempt + 1 >= attempts:
+                    raise
+                delay = _backoff(attempt)
+                logger.warning(
+                    "WAHA %s %s failed (%s); retrying in %.1fs",
+                    method, path, exc, delay,
+                )
+                await asyncio.sleep(delay)
+            except httpx.TimeoutException:
+                if not retry_timeouts or attempt + 1 >= attempts:
+                    raise
+                delay = _backoff(attempt)
+                logger.warning(
+                    "WAHA %s %s timed out; retrying in %.1fs", method, path, delay
+                )
+                await asyncio.sleep(delay)
+
+        if last_exc is not None:
+            raise last_exc
+        raise RuntimeError(f"WAHA {method} {path} failed")
 
     # -------------------------------------------------------- echo control
     def remember_outgoing(self, text: str, message_id: Optional[str] = None) -> None:
@@ -152,10 +243,9 @@ class WAHAClient:
             return self._me_id
 
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                resp = await client.get(
-                    self._url(f"/api/sessions/{self.session}"), headers=self._headers()
-                )
+            resp = await self._request(
+                "GET", f"/api/sessions/{self.session}", retries=1, timeout=10.0
+            )
             if resp.status_code != 200:
                 logger.warning("Could not read session %s: %s", self.session, resp.status_code)
                 return None
@@ -203,14 +293,29 @@ class WAHAClient:
         )
 
     # ------------------------------------------------------------ messaging
-    async def _post(self, path: str, payload: dict) -> Optional[dict]:
+    async def _post(
+        self,
+        path: str,
+        payload: dict,
+        *,
+        retries: Optional[int] = None,
+        retry_timeouts: bool = False,
+    ) -> Optional[dict]:
+        if retries is None:
+            retries = config.WAHA_SEND_RETRIES
         try:
-            async with httpx.AsyncClient(timeout=30) as client:
-                resp = await client.post(
-                    self._url(path), json=payload, headers=self._headers()
-                )
+            resp = await self._request(
+                "POST",
+                path,
+                retries=retries,
+                retry_timeouts=retry_timeouts,
+                json=payload,
+            )
             if resp.status_code >= 400:
-                logger.error("WAHA %s failed (%s): %s", path, resp.status_code, resp.text[:300])
+                logger.error(
+                    "WAHA %s failed (%s): %s",
+                    path, resp.status_code, resp.text[:300],
+                )
                 return None
             try:
                 return resp.json()
@@ -223,6 +328,8 @@ class WAHAClient:
     async def send_text(self, chat_id: str, text: str) -> bool:
         """Send a text message. The body is fingerprinted before sending so the
         resulting `fromMe` webhook can never be mistaken for a new question."""
+        # WhatsApp does not render Markdown: convert it before fingerprinting.
+        text = to_whatsapp(text)
         if not text.strip():
             return False
 
@@ -256,21 +363,24 @@ class WAHAClient:
 
     async def start_typing(self, chat_id: str) -> None:
         await self._post(
-            "/api/startTyping", {"session": self.session, "chatId": chat_id}
+            "/api/startTyping",
+            {"session": self.session, "chatId": chat_id},
+            retries=0,
         )
 
     async def stop_typing(self, chat_id: str) -> None:
         await self._post(
-            "/api/stopTyping", {"session": self.session, "chatId": chat_id}
+            "/api/stopTyping",
+            {"session": self.session, "chatId": chat_id},
+            retries=0,
         )
 
     # -------------------------------------------------------------- session
     async def session_status(self) -> dict:
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                resp = await client.get(
-                    self._url(f"/api/sessions/{self.session}"), headers=self._headers()
-                )
+            resp = await self._request(
+                "GET", f"/api/sessions/{self.session}", retries=0, timeout=5.0
+            )
             if resp.status_code != 200:
                 return {"status": "unknown", "http_status": resp.status_code}
             return resp.json()
@@ -279,18 +389,20 @@ class WAHAClient:
 
     async def start_session(self) -> dict:
         """Start (or resume) the WAHA session. Safe to call repeatedly."""
-        data = await self._post(f"/api/sessions/{self.session}/start", {})
+        data = await self._post(f"/api/sessions/{self.session}/start", {}, retries=1)
         if data is None:
             # Older/alternative WAHA builds expose POST /api/sessions instead.
-            data = await self._post("/api/sessions", {"name": self.session, "start": True})
+            data = await self._post(
+                "/api/sessions", {"name": self.session, "start": True}, retries=1
+            )
         return data or {}
 
     async def restart_session(self) -> dict:
         """Restart a FAILED/expired session so a fresh QR can be generated."""
-        data = await self._post(f"/api/sessions/{self.session}/restart", {})
+        data = await self._post(f"/api/sessions/{self.session}/restart", {}, retries=1)
         if data is None:
-            await self._post(f"/api/sessions/{self.session}/stop", {})
-            data = await self._post(f"/api/sessions/{self.session}/start", {})
+            await self._post(f"/api/sessions/{self.session}/stop", {}, retries=1)
+            data = await self._post(f"/api/sessions/{self.session}/start", {}, retries=1)
         return data or {}
 
     async def wait_for_qr(self, attempts: int = 20, delay: float = 0.7) -> Optional[bytes]:
@@ -306,14 +418,14 @@ class WAHAClient:
     async def qr_image(self) -> Optional[bytes]:
         """Fetch the pairing QR as PNG (dashboard is the fallback)."""
         try:
-            headers = self._headers()
-            headers["Accept"] = "image/png"
-            async with httpx.AsyncClient(timeout=15) as client:
-                resp = await client.get(
-                    self._url(f"/api/{self.session}/auth/qr"),
-                    params={"format": "image"},
-                    headers=headers,
-                )
+            resp = await self._request(
+                "GET",
+                f"/api/{self.session}/auth/qr",
+                retries=1,
+                timeout=15.0,
+                params={"format": "image"},
+                headers={"Accept": "image/png"},
+            )
             if resp.status_code == 200 and resp.headers.get("content-type", "").startswith("image"):
                 return resp.content
         except Exception as exc:  # noqa: BLE001

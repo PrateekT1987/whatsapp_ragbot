@@ -97,7 +97,7 @@ class QdrantVectorStoreManager:
         qdrant_url: str,
         qdrant_api_key: str,
     ) -> VectorStore:
-        """Create Qdrant vector store."""
+        """Create Qdrant vector store, validating the embedding dimension."""
         # langchain-qdrant 0.1.x exports the store as `Qdrant`
         # (`QdrantVectorStore` is the name used from 0.2 onwards).
         from langchain_qdrant import Qdrant as QdrantVectorStore
@@ -105,14 +105,36 @@ class QdrantVectorStoreManager:
 
         client = self._client()
 
+        # Ask the embedder instead of hardcoding 384: switching to OpenAI
+        # embeddings must not silently create a mismatched collection.
+        dimension = len(embeddings.embed_query("dimension probe"))
+
         # Ensure collection exists
         collections = client.get_collections().collections
-        if not any(c.name == collection_name for c in collections):
-            logger.info(f"Creating Qdrant collection: {collection_name}")
+        exists = any(c.name == collection_name for c in collections)
+        if not exists:
+            logger.info(
+                "Creating Qdrant collection: %s (%s-dim)", collection_name, dimension
+            )
             client.create_collection(
                 collection_name=collection_name,
-                vectors_config=VectorParams(size=384, distance=Distance.COSINE),
+                vectors_config=VectorParams(size=dimension, distance=Distance.COSINE),
             )
+        else:
+            info = client.get_collection(collection_name)
+            vectors = info.config.params.vectors
+            if isinstance(vectors, dict):
+                sizes = {v.size for v in vectors.values()}
+                existing = sizes.pop() if len(sizes) == 1 else None
+            else:
+                existing = getattr(vectors, "size", None)
+            if existing is not None and existing != dimension:
+                raise ValueError(
+                    f"Qdrant collection '{collection_name}' stores {existing}-dim "
+                    f"vectors but the configured embedder produces {dimension}-dim. "
+                    "Delete that collection (Qdrant dashboard) or set "
+                    "QDRANT_COLLECTION to a new name, then restart."
+                )
 
         return QdrantVectorStore(
             client=client,

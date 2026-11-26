@@ -1,10 +1,9 @@
 """Caching layer for RAG queries and session data."""
 
 import hashlib
-import json
 import logging
 import time
-from pathlib import Path
+from collections import OrderedDict
 from typing import Any, Dict, Optional
 
 import diskcache
@@ -15,32 +14,41 @@ logger = logging.getLogger(__name__)
 
 
 class QueryCache:
-    """Multi-level cache for query responses.
-    
-    Level 1: Exact match in-memory cache (very fast, for identical questions)
+    """Multi-level LRU cache for query responses.
+
+    Level 1: Exact match in-memory LRU (very fast, for identical questions)
     Level 2: Disk-based cache with TTL (persists across restarts)
+
+    A hit refreshes the entry's position and timestamp, so frequently asked
+    questions stay cached and the least recently used entry is evicted first.
     """
 
     def __init__(self):
         self.enabled = config.CACHE_ENABLED
-        self.exact_cache: Dict[str, tuple[str, float]] = {}  # key -> (value, timestamp)
+        # key -> (value, last_used_at)
+        self.exact_cache: "OrderedDict[str, tuple[str, float]]" = OrderedDict()
         self.exact_cache_size = config.EXACT_CACHE_SIZE
-        
+        self.hits = 0
+        self.misses = 0
+
         # Disk cache for persistence
         config.CACHE_DIR.mkdir(parents=True, exist_ok=True)
         self.disk_cache = diskcache.Cache(str(config.CACHE_DIR))
         self.cache_ttl = config.CACHE_TTL
 
-    def _make_key(self, question: str) -> str:
+    def make_key(self, question: str) -> str:
         """Create a normalized cache key from the question.
 
-        The WAHA session name is part of the key so that bots sharing a cache
-        directory (the Compose setup mounts ./cache into every bot) never serve
-        each other's answers.
+        The session name, model and collection are part of the key so that
+        bots sharing a cache directory (the Compose setup mounts ./cache into
+        every bot) never serve each other's answers, and changing the model
+        invalidates answers produced by the previous one.
         """
-        # Normalize: lowercase, strip, remove extra whitespace
         normalized = " ".join(question.lower().strip().split())
-        scoped = f"{config.WAHA_SESSION}:{normalized}"
+        scoped = (
+            f"{config.WAHA_SESSION}:{config.LLM_MODEL}:"
+            f"{config.QDRANT_COLLECTION}:{normalized}"
+        )
         return hashlib.sha256(scoped.encode()).hexdigest()
 
     def get(self, question: str) -> Optional[str]:
@@ -48,29 +56,38 @@ class QueryCache:
         if not self.enabled:
             return None
 
-        key = self._make_key(question)
+        key = self.make_key(question)
         now = time.time()
 
-        # Level 1: Exact in-memory cache
+        # Level 1: Exact in-memory LRU
         if key in self.exact_cache:
             value, timestamp = self.exact_cache[key]
             if now - timestamp < self.cache_ttl:
                 logger.debug(f"Cache hit (exact): {question[:50]}...")
+                # Refresh recency and TTL on read.
+                self.exact_cache.move_to_end(key)
+                self.exact_cache[key] = (value, now)
+                self.hits += 1
                 return value
-            else:
-                del self.exact_cache[key]
+            del self.exact_cache[key]
 
         # Level 2: Disk cache
         try:
             value = self.disk_cache.get(key)
             if value is not None:
                 logger.debug(f"Cache hit (disk): {question[:50]}...")
-                # Promote to exact cache
+                # Promote to exact cache and extend the disk TTL.
                 self._add_to_exact(key, value)
+                try:
+                    self.disk_cache.touch(key, expire=self.cache_ttl)
+                except Exception:  # noqa: BLE001 - touch is best effort
+                    pass
+                self.hits += 1
                 return value
         except Exception as e:
             logger.warning(f"Disk cache read error: {e}")
 
+        self.misses += 1
         return None
 
     def set(self, question: str, response: str) -> None:
@@ -78,11 +95,11 @@ class QueryCache:
         if not self.enabled:
             return
 
-        key = self._make_key(question)
-        
+        key = self.make_key(question)
+
         # Add to exact cache
         self._add_to_exact(key, response)
-        
+
         # Add to disk cache
         try:
             self.disk_cache.set(key, response, expire=self.cache_ttl)
@@ -90,13 +107,11 @@ class QueryCache:
             logger.warning(f"Disk cache write error: {e}")
 
     def _add_to_exact(self, key: str, value: str) -> None:
-        """Add to exact cache with LRU eviction."""
-        now = time.time()
-        self.exact_cache[key] = (value, now)
-        # Evict oldest if over size limit
+        """Add to the in-memory LRU, evicting the least recently used entry."""
+        self.exact_cache[key] = (value, time.time())
+        self.exact_cache.move_to_end(key)
         while len(self.exact_cache) > self.exact_cache_size:
-            oldest_key = min(self.exact_cache.keys(), key=lambda k: self.exact_cache[k][1])
-            del self.exact_cache[oldest_key]
+            self.exact_cache.popitem(last=False)
 
     def clear(self) -> None:
         """Clear all caches."""
@@ -108,12 +123,16 @@ class QueryCache:
 
     def stats(self) -> Dict[str, Any]:
         """Get cache statistics."""
+        total = self.hits + self.misses
         return {
             "enabled": self.enabled,
             "exact_cache_size": len(self.exact_cache),
             "exact_cache_max": self.exact_cache_size,
             "disk_cache_size": len(self.disk_cache),
             "ttl": self.cache_ttl,
+            "hits": self.hits,
+            "misses": self.misses,
+            "hit_rate": round(self.hits / total, 3) if total else 0.0,
         }
 
 

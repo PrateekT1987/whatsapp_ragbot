@@ -97,6 +97,10 @@ class DocumentWatcher:
                     self._pending = True
                 return
 
+            if not rag_system.initialized:
+                logger.info("RAG not initialized yet; skipping automatic update")
+                return
+
             # Incremental: only new/changed files are embedded, removed files
             # have their chunks dropped. A full rebuild is reserved for /reload.
             count = rag_system.load_documents()

@@ -30,6 +30,10 @@ namespace, so the two never mix context.
 - 🗄️ **Qdrant vector store** – persistent, fast, one collection per bot
 - 🔎 **Hybrid retrieval** – keyword matching for names/numbers plus vector similarity
 - ⚡ **Two-level query cache** – in-memory LRU + on-disk TTL cache
+- 📚 **Citations** – answers end with `Source: file, page N`
+- 🧹 **WhatsApp-safe formatting** – Markdown is converted before sending
+- 🚦 **Ordered, bounded queues** – one queue per chat, 1–2 concurrent LLM calls
+- ♻️ **Retries + fallback** – jittered backoff on 429/5xx, optional second model
 - 🔀 **Optional streaming** – token-by-token delivery (off by default)
 - ⌨️ **Typing indicator**, long answers split into readable chunks
 - 🔐 **Optional** WAHA API key + HMAC webhook signature
@@ -142,23 +146,33 @@ from its documents folder.
    changed files are embedded; a changed file's old chunks are deleted first,
    and removing a PDF drops its chunks.
 3. Chunks are written to the Qdrant collection named by `QDRANT_COLLECTION`
-   (created automatically on first use, 384-dim cosine vectors) with
-   deterministic point ids, so an interrupted indexing pass resumes without
-   duplicating points.
+   (created automatically on first use, cosine vectors) with deterministic
+   point ids, so an interrupted indexing pass resumes without duplicating
+   points. The vector size is read from the embedder and checked against the
+   existing collection; a mismatch fails with a clear error instead of
+   corrupting the index.
 4. The indexed files and their modification times are recorded in
    `cache/indexed_<collection>.json`, so a restart does not re-embed the whole
    folder (and does not duplicate points).
 
 ### Query → answer
 
-1. The question is normalized and looked up in the cache (memory, then disk).
-2. On a miss, retrieval is **hybrid**: chunks containing the query's key terms
+1. WAHA's webhook is checked against `WAHA_SESSION`, then queued per chat. A
+   chat's questions are answered in order, and a global semaphore
+   (`MAX_CONCURRENT_QUERIES`) caps parallel model calls.
+2. The question is normalized and looked up in the cache (memory, then disk).
+   Identical questions already in flight share one model call.
+3. On a miss, retrieval is **hybrid**: chunks containing the query's key terms
    verbatim are ranked first, then the top `TOP_K_RESULTS` vector-similarity
    chunks are appended. Keyword matching is punctuation-insensitive, which
    matters because PDF extraction glues serial numbers to names
    (`15Abhishek.J.Patil`) and dots inside names defeat ordinary token search.
-3. The chunks become context for the chat prompt; OpenRouter generates the answer.
-4. The answer is cached and sent back to the self-chat.
+4. The chunks become context for the chat prompt; OpenRouter generates the
+   answer. Transient failures (429/5xx/timeout) are retried with jittered
+   backoff; `LLM_FALLBACK_MODEL` is tried if the primary stays unavailable.
+5. The answer is formatted for WhatsApp, given a `Source: file, page N` line,
+   cached, and sent back to the self-chat. While `/reload` runs, new questions
+   get a "reindexing" reply instead of an empty answer.
 
 ### Why local embeddings?
 
@@ -170,20 +184,26 @@ download it again. No OpenAI key needed.
 
 ## Caching
 
-Two levels, both keyed by a SHA-256 of the normalized question (lower-cased,
-whitespace-collapsed), so `How many days?` and `  how many   days? ` hit the
-same entry.
+Two levels, keyed by a SHA-256 of the normalized question (lower-cased,
+whitespace-collapsed) **plus** the session name, model and collection, so
+`How many days?` and `  how many   days? ` share an entry while changing the
+model never serves an answer from the previous one.
 
 | Level | Storage | Scope | Speed |
 |---|---|---|---|
-| L1 exact | in-process dict with LRU eviction | one container | microseconds |
+| L1 exact | in-process `OrderedDict` with LRU eviction | one container | microseconds |
 | L2 disk | `diskcache` in `CACHE_DIR` | survives restarts, shared by a session | ~ms |
 
-- A disk hit is promoted back into L1.
+- A hit refreshes the entry's recency and TTL; the least recently used entry is
+  evicted first.
+- A disk hit is promoted back into L1 and its disk TTL is extended.
 - Entries expire after `CACHE_TTL` seconds.
+- Identical questions arriving concurrently share a single model call
+  (single-flight), so a double-send cannot double the OpenRouter cost.
 - `/reload` clears the cache, so rebuilt indexes never serve stale answers.
 - `me_id` / `me_lid` for the WAHA session are also persisted in the same cache
   directory, which avoids an extra WAHA API round-trip on every restart.
+- `/cache` reports hits, misses and hit rate.
 
 Tune with:
 
@@ -199,12 +219,41 @@ Tune with:
 Set `LLM_STREAMING=true` to have the answer delivered as it is generated
 instead of waiting for the full response. It is **off by default** because each
 streamed chunk is a separate `sendText` call: tokens are coalesced into bubbles
-of roughly 160 characters (or at paragraph/sentence boundaries), so WhatsApp
-still shows several messages rather than one, and it costs more API calls.
+of roughly 160 characters (or at paragraph/sentence boundaries), and a
+`STREAM_CHUNK_DELAY_MS` pause (default 400 ms) separates bubbles so a long
+answer cannot trip WhatsApp's flood protection.
 
 Retrieval always happens before generation, so streaming never changes *which*
-documents are used — only how the answer is delivered. Cached answers are sent
-as a single message and are not streamed.
+documents are used — only how the answer is delivered. Citations are sent as a
+final bubble. Cached answers are sent as a single message and are not streamed.
+If a stream fails before any text was sent, the bot falls back to the normal
+retry path.
+
+## Reliability
+
+- **Session isolation** – webhooks whose `session` is not this bot's
+  `WAHA_SESSION` are ignored, so a shared webhook URL cannot mix personal and
+  work messages.
+- **Ordered queues** – each chat has a bounded queue (`MAX_QUEUED_PER_CHAT`);
+  replies stay in order and a burst cannot create dozens of parallel calls.
+  When a queue is full, the chat gets a one-line "still working" notice.
+- **Retries** – WAHA sends and LLM calls retry transient 429/5xx/connection
+  failures with jittered exponential backoff. Sends are not retried on a read
+  timeout (that could duplicate a message). A "model is busy — retrying…"
+  notice is sent once per question.
+- **Fallback model** – set `LLM_FALLBACK_MODEL` to a second `:free` model; it is
+  used only after the primary exhausts its retries.
+- **Startup resilience** – the Qdrant connection happens in the lifespan and is
+  retried in the background; the HTTP server starts immediately and `/ready`
+  reports 503 with the reason until it succeeds.
+- **WAHA recovery** – a `FAILED` session is restarted once at startup and the
+  live status is included in `/ready`.
+- **Rebuild safety** – `/reload` waits for in-flight questions, tells new ones
+  the bot is reindexing, and only then drops/recreates the collection.
+- **Dimension check** – the embedder's vector size is verified against the
+  existing collection; a mismatch stops with an actionable message instead of
+  writing invalid points.
+- **Shared HTTP client** – one pooled `httpx.AsyncClient` for all WAHA calls.
 
 ## Configuration
 
@@ -228,9 +277,16 @@ These are consumed by `docker-compose.yml`, not by the bot:
 | `WAHA_API_KEY` | – | sent as `X-Api-Key` when set |
 | `WAHA_HMAC_KEY` | – | verify `X-Webhook-Hmac` (SHA512, algorithm from `X-Webhook-Hmac-Algorithm`) |
 | `WAHA_SELF_CHAT_ONLY` | `true` | answer only in "Message Yourself" |
+| `WAHA_SEND_RETRIES` | `2` | retries for transient WAHA send failures |
+| `WAHA_TIMEOUT` | `30` | WAHA HTTP timeout (seconds) |
 | `LLM_PROVIDER` | `openrouter` | `openrouter` or `openai` |
 | `LLM_MODEL` | `nvidia/nemotron-3-ultra-550b-a55b:free` | any OpenRouter model |
+| `LLM_FALLBACK_MODEL` | – | second `:free` model used after retries fail |
 | `LLM_STREAMING` | `false` | deliver the answer incrementally |
+| `LLM_MAX_RETRIES` | `3` | retries for transient LLM failures |
+| `LLM_RETRY_BASE_SECONDS` | `2.0` | first backoff delay (doubles, capped) |
+| `LLM_TIMEOUT` | `120` | LLM request timeout (seconds) |
+| `SHOW_SOURCES` | `true` | append `Source: file, page N` to answers |
 | `OPENROUTER_API_KEY` | – | required for `openrouter` |
 | `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | API base |
 | `EMBEDDING_PROVIDER` | `local` | `local` (free) or `openai` |
@@ -245,6 +301,10 @@ These are consumed by `docker-compose.yml`, not by the bot:
 | `DOCUMENTS_PATH` | `./documents` | PDF folder (compose mounts `documents_<name>`) |
 | `CHUNK_SIZE` / `CHUNK_OVERLAP` | `1000` / `200` | splitting |
 | `TOP_K_RESULTS` | `4` | chunks retrieved per question |
+| `MAX_CONCURRENT_QUERIES` | `2` | parallel LLM calls across all chats |
+| `MAX_QUEUED_PER_CHAT` | `5` | messages buffered per chat before it gets a "busy" notice |
+| `STREAM_CHUNK_DELAY_MS` | `400` | pause between streamed bubbles (flood protection) |
+| `STARTUP_RETRY_SECONDS` | `2` | first Qdrant-connect retry delay (doubles to 60s) |
 | `UVICORN_RELOAD` | `false` | dev-only auto-restart on `.py` edits |
 | `SYSTEM_PROMPT` | see `.env.example` | assistant behaviour |
 
@@ -264,10 +324,11 @@ rag_documents_work       ← bot-work
 - Web UI: `http://localhost:6333/dashboard?api_key=<QDRANT_API_KEY>`
   (the API key is in `.env`; plain HTTP requests without it return 401)
 - Data lives in `./qdrant_data/` (git-ignored) and survives rebuilds.
-- Collections are created automatically with 384-dim cosine vectors, matching
-  the MiniLM embedder.
-- Switching embedding provider to `openai` changes the vector size; delete the
-  collection (or run `/reload`, which drops and recreates it) afterwards.
+- Collections are created automatically with cosine vectors whose size is read
+  from the configured embedder (384 for the bundled MiniLM model).
+- Switching embedding provider changes the vector size; the bot detects the
+  mismatch at startup and asks you to delete the collection (or run `/reload`,
+  which drops and recreates it) instead of writing invalid points.
 - To start clean: `docker compose down && rm -rf qdrant_data && docker compose up -d`
 
 ## Single-session deployment
@@ -315,11 +376,13 @@ whatsapp_bot/
 ├── rag.py             # Qdrant retriever + LangChain chains (cached/streaming)
 ├── vectorstore.py     # Qdrant manager (collection lifecycle, counts)
 ├── cache.py           # query cache (memory + disk) and session cache
+├── formatting.py      # Markdown → WhatsApp markup conversion
 ├── embeddings.py      # local ONNX or OpenAI embeddings
 ├── watcher.py         # auto re-index on file changes
 ├── config.py          # environment configuration
 ├── run.py             # preflight checks + uvicorn
 ├── test_rag.py        # RAG smoke test (no WhatsApp)
+├── test_p1.py         # unit tests for formatting/cache/retry/citations
 ├── Dockerfile
 ├── docker-compose.yml # qdrant + waha/bot per session
 ├── documents_personal/  # personal PDFs       (git-ignored)
