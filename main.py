@@ -16,6 +16,7 @@ from rag import rag_system
 from waha import extract_message_id, waha
 from watcher import document_watcher
 from cache import query_cache
+from voice import handle_voice_note
 from logging_utils import (
     configure_logging,
     new_request_id,
@@ -317,27 +318,41 @@ async def _process_message(payload: dict) -> None:
     if waha.mark_seen(message_id):
         return
 
-    body = (payload.get("body") or "").strip()
-    if not body:
-        return
-
     msg_type = payload.get("type")
-    if msg_type not in (None, "text"):
-        return
-
-    if not await waha.is_self_chat(payload):
-        if config.WAHA_SELF_CHAT_ONLY:
-            logger.debug("Ignoring non self-chat message from %s", payload.get("chatId"))
-            return
-
-    # Our own answer echoed back into the self-chat - never answer it.
-    if waha.is_own_reply(message_id, body):
-        logger.debug("Ignoring own echoed message")
-        return
-
     chat_id = payload.get("from") or payload.get("chatId")
     if not chat_id:
         return
+
+    # Handle voice notes (PTT/audio)
+    if msg_type in ("ptt", "audio", "voice"):
+        if not await waha.is_self_chat(payload):
+            if config.WAHA_SELF_CHAT_ONLY:
+                logger.debug("Ignoring non self-chat voice from %s", payload.get("chatId"))
+                return
+        text = await handle_voice_note(waha, payload, chat_id)
+        if not text:
+            await waha.send_text(chat_id, "🎤 Could not transcribe voice note. Please try again or send text.")
+            return
+        body = text
+        logger.info("Voice transcribed: %s", text[:100])
+    else:
+        # Text message handling
+        body = (payload.get("body") or "").strip()
+        if not body:
+            return
+
+        if msg_type not in (None, "text"):
+            return
+
+        if not await waha.is_self_chat(payload):
+            if config.WAHA_SELF_CHAT_ONLY:
+                logger.debug("Ignoring non self-chat message from %s", payload.get("chatId"))
+                return
+
+        # Our own answer echoed back into the self-chat - never answer it.
+        if waha.is_own_reply(message_id, body):
+            logger.debug("Ignoring own echoed message")
+            return
 
     # Privacy: question text is only logged when explicitly enabled.
     if config.LOG_QUESTION_TEXT:

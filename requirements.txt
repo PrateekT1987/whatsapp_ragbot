@@ -14,3 +14,4 @@ httpx==0.27.0
 tiktoken
 diskcache==5.6.3
 prometheus-client==0.19.0
+openai-whisper==20231117
