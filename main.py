@@ -44,10 +44,15 @@ HELP_TEXT = (
     "**Commands**\n"
     "• /help – this message\n"
     "• /stats – how many chunks/files are indexed\n"
+    "• /docs – list indexed documents\n"
     "• /reload – rebuild the index from the documents folder\n"
+    "• /reindex <file> – re-index a specific PDF\n"
+    "• /delete <file> – remove a PDF from the index\n"
     "• /ping – check that the bot is alive\n"
     "• /cache – show cache statistics\n"
     "• /cache clear – clear the query cache\n"
+    "• /forget – clear your conversation history\n"
+    "• /good /bad – rate the last answer (improves future results)\n"
 )
 
 
@@ -160,7 +165,7 @@ _dispatcher = ChatDispatcher(
 )
 
 
-async def _handle_command(text: str) -> str | None:
+async def _handle_command(text: str, chat_id: str = "") -> str | None:
     cmd = text.strip().lower()
     if cmd in ("/help", "help", "?"):
         return HELP_TEXT
@@ -176,13 +181,32 @@ async def _handle_command(text: str) -> str | None:
         cache_info = ""
         if cache_stats:
             cache_info = f"\n**Cache**\n  Enabled: {cache_stats.get('enabled')}\n  Exact: {cache_stats.get('exact_cache_size')}/{cache_stats.get('exact_cache_max')}\n  Disk: {cache_stats.get('disk_cache_size')}\n  Hit rate: {cache_stats.get('hit_rate', 0)}"
+        structured = stats.get("structured", {})
+        structured_info = ""
+        if structured:
+            structured_info = f"\n**Structured Data**\n  Rows: {structured.get('total_rows', 0)}\n  Districts: {len(structured.get('districts', {}))}"
         return (
             f"📊 **Index**\n\n"
             f"Chunks: {stats.get('document_count', 0)}\n"
             f"Files: {stats.get('processed_files', 0)}\n"
-            f"Vector Store: {vector_store}{cache_info}\n\n"
+            f"Vector Store: {vector_store}{cache_info}{structured_info}\n\n"
             f"**Sources**\n{files}"
         )
+    if cmd == "/docs":
+        stats = await asyncio.to_thread(rag_system.get_stats)
+        files = stats.get("files", [])
+        if not files:
+            return "📁 No documents indexed."
+        lines = [f"📁 **Indexed Documents** ({len(files)})"]
+        for f in files:
+            lines.append(f"  • {f}")
+        structured = stats.get("structured", {})
+        if structured:
+            lines.append(f"\n📊 **Structured Data**")
+            lines.append(f"  Rows: {structured.get('total_rows', 0)}")
+            for district, count in list(structured.get("districts", {}).items())[:10]:
+                lines.append(f"  {district}: {count}")
+        return "\n".join(lines)
     if cmd == "/reload":
         if rag_system.rebuilding:
             return "🔄 A rebuild is already running. Please wait."
@@ -194,11 +218,78 @@ async def _handle_command(text: str) -> str | None:
         except Exception as exc:  # noqa: BLE001
             logger.exception("Reload failed")
             return f"❌ Reload failed: {exc}"
+    if cmd.startswith("/reindex "):
+        filename = text.strip()[9:].strip()
+        if not filename:
+            return "Usage: /reindex <filename.pdf>"
+        pdf_path = config.DOCUMENTS_PATH / filename
+        if not pdf_path.exists():
+            return f"❌ File not found: {filename}"
+        try:
+            # Remove from vector store
+            if rag_system.vector_manager:
+                rag_system.vector_manager.delete_file(pdf_path)
+                rag_system.vector_manager.remove_processed_file(pdf_path)
+            # Re-index
+            count = await asyncio.to_thread(rag_system.load_documents)
+            return f"✅ Re-indexed {filename} ({count} file(s) processed)"
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Reindex failed")
+            return f"❌ Reindex failed: {exc}"
+    if cmd.startswith("/delete "):
+        filename = text.strip()[8:].strip()
+        if not filename:
+            return "Usage: /delete <filename.pdf>"
+        pdf_path = config.DOCUMENTS_PATH / filename
+        if not pdf_path.exists():
+            return f"❌ File not found: {filename}"
+        try:
+            if rag_system.vector_manager:
+                rag_system.vector_manager.delete_file(pdf_path)
+                rag_system.vector_manager.remove_processed_file(pdf_path)
+            # Also remove from structured data (SQLite)
+            import sqlite3
+            with sqlite3.connect(config.STRUCTURED_DB_PATH) as conn:
+                conn.execute("DELETE FROM members WHERE source_file = ?", (filename,))
+            return f"✅ Deleted {filename} from index"
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Delete failed")
+            return f"❌ Delete failed: {exc}"
     if cmd == "/cache":
         return f"📦 **Cache Stats**\n\n{json.dumps(query_cache.stats(), indent=2)}"
     if cmd == "/cache clear":
         query_cache.clear()
         return "✅ Query cache cleared."
+    if cmd == "/forget":
+        if chat_id:
+            rag_system.conversation.clear(chat_id)
+            return "🧠 Conversation history cleared."
+        return "❌ No chat context available."
+    if cmd in ("/good", "/bad"):
+        if not config.FEEDBACK_ENABLED:
+            return "Feedback is disabled."
+        # Store feedback (simplified - in production you'd want more context)
+        rating = "good" if cmd == "/good" else "bad"
+        try:
+            import sqlite3
+            with sqlite3.connect(config.FEEDBACK_DB_PATH) as conn:
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS feedback (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        chat_id TEXT,
+                        question TEXT,
+                        answer TEXT,
+                        rating TEXT,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                conn.execute("""
+                    INSERT INTO feedback (chat_id, rating) VALUES (?, ?)
+                """, (chat_id, rating))
+            return f"👍 Thanks for the feedback!" if rating == "good" else "👎 Thanks, we'll improve."
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Feedback save failed: %s", exc)
+            return "❌ Could not save feedback."
     return None
 
 
@@ -255,7 +346,7 @@ async def _process_message(payload: dict) -> None:
         logger.info("Question from %s (%d chars)", payload.get("from"), len(body))
 
     try:
-        reply = await _handle_command(body)
+        reply = await _handle_command(body, chat_id)
         if reply is None:
             await waha.start_typing(chat_id)
             try:
@@ -285,7 +376,7 @@ async def _process_message(payload: dict) -> None:
                         )
 
                     reply = await asyncio.to_thread(
-                        rag_system.query, body, on_retry
+                        rag_system.query, body, chat_id, on_retry
                     )
             finally:
                 await waha.stop_typing(chat_id)
@@ -587,9 +678,9 @@ async def test_webhook(message: str, simulate: str = "self"):
     """Simulate a self-chat message without WhatsApp (useful for smoke tests)."""
     if simulate == "self":
         payload = {"fromMe": True, "type": "text", "body": message}
-        reply = await _handle_command(message)
+        reply = await _handle_command(message, "test")
         if reply is None:
-            reply = await asyncio.to_thread(rag_system.query, message)
+            reply = await asyncio.to_thread(rag_system.query, message, "test")
         return {"response": reply}
     raise HTTPException(status_code=400, detail="Only simulate=self is supported")
 

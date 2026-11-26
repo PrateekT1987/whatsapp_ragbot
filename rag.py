@@ -1,12 +1,14 @@
-"""RAG system with Qdrant vector store, caching, retries and citations."""
+"""RAG system with Qdrant vector store, structured data (SQLite), caching, retries and citations."""
 
 import asyncio
 import logging
 import random
+import re
 import threading
 import time
+from collections import OrderedDict
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from langchain_community.document_loaders import PyPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -19,6 +21,7 @@ from config import config
 from embeddings import get_embeddings
 from vectorstore import QdrantVectorStoreManager
 from cache import query_cache
+from structured_extractor import get_table_extractor
 from metrics import (
     LLM_ERRORS,
     LLM_RETRIES,
@@ -104,6 +107,142 @@ def _format_sources(docs: List[Document], limit: int = 3) -> str:
     return "\n\n" + prefix + "; ".join(labels)
 
 
+def _format_structured_results(rows: List[Dict[str, Any]], limit: int = 10) -> str:
+    """Format structured query results for WhatsApp."""
+    if not rows:
+        return "No matching records found."
+
+    lines = []
+    for i, row in enumerate(rows[:limit], 1):
+        parts = []
+        if row.get("s_no"):
+            parts.append(f"#{row['s_no']}")
+        if row.get("name"):
+            parts.append(row["name"])
+        if row.get("mobile"):
+            parts.append(f"📞 {row['mobile']}")
+        if row.get("address"):
+            parts.append(f"📍 {row['address']}")
+        if row.get("district"):
+            parts.append(f"🏙️ {row['district']}")
+        if row.get("pin"):
+            parts.append(f"📮 {row['pin']}")
+        lines.append(" | ".join(parts))
+
+    if len(rows) > limit:
+        lines.append(f"... and {len(rows) - limit} more")
+
+    return "\n".join(lines)
+
+
+# Keywords that suggest a structured query
+_STRUCTURED_KEYWORDS = {
+    "count", "how many", "number of", "total",
+    "mobile", "phone", "contact",
+    "address", "district", "pin", "pincode", "postal",
+    "member", "members",
+    "list", "show", "find",
+    "bidar", "kalaburagi", "gulbarga", "raichur", "hubballi", "mysore",
+    "bangalore", "belgaum", "dharwad", "shimoga", "tumkur", "udupi",
+    "hassan", "mandya", "kolar", "chikmagalur", "kodagu", "chamrajnagar",
+    "bijapur", "bagalkot", "haveri", "gadag", "koppal", "yadgir",
+    "chikkaballapur", "ramanagara", "chitradurga", "davangere", "uttara kannada",
+    "dakshina kannada",
+}
+
+
+def _looks_like_structured_query(question: str) -> bool:
+    """Heuristic: does this question look like it wants structured data?"""
+    q_lower = question.lower()
+    words = set(re.findall(r"[a-z]+", q_lower))
+    # Check for structured keywords
+    if words & _STRUCTURED_KEYWORDS:
+        return True
+    # Check for "X in Y" pattern (e.g., "members in Bidar")
+    if re.search(r"\b(in|from|at|near)\s+\w+", q_lower):
+        return True
+    return False
+
+
+def _extract_district(question: str) -> Optional[str]:
+    """Try to extract a district name from the question."""
+    districts = [
+        "bagalkot", "bangalore", "bangalore rural", "belgaum", "bellary",
+        "bidar", "bijapur", "chamarajanagar", "chikkaballapur", "chikmagalur",
+        "chitradurga", "dakshina kannada", "davangere", "dharwad", "gadag",
+        "gulbarga", "hassan", "haveri", "kalaburagi", "kodagu", "kolar",
+        "koppal", "mandya", "mysore", "raichur", "ramanagara", "shimoga",
+        "tumkur", "udupi", "uttara kannada", "yadgir"
+    ]
+    q_lower = question.lower()
+    for d in districts:
+        if d in q_lower:
+            return d.title()
+    return None
+
+
+def _extract_name(question: str) -> Optional[str]:
+    """Try to extract a person name from the question."""
+    # Look for patterns like "mobile of X", "address of X", "X's mobile", etc.
+    patterns = [
+        r"(?:mobile|phone|contact|address)\s+(?:of|for)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)",
+        r"([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s*(?:mobile|phone|contact|address)",
+        r"(?:who is|find|search)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, question, re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
+    return None
+
+
+def _extract_mobile(question: str) -> Optional[str]:
+    """Try to extract a mobile number from the question."""
+    match = re.search(r"\b(\d{10})\b", question)
+    if match:
+        return match.group(1)
+    return None
+
+
+class ConversationMemory:
+    """Per-chat conversation history for context."""
+
+    def __init__(self, max_size: int = 3, ttl: int = 3600):
+        self.max_size = max_size
+        self.ttl = ttl
+        self._history: Dict[str, List[Tuple[str, str, float]]] = {}  # chat_id -> [(q, a, time)]
+        self._lock = threading.Lock()
+
+    def add(self, chat_id: str, question: str, answer: str) -> None:
+        with self._lock:
+            now = time.time()
+            if chat_id not in self._history:
+                self._history[chat_id] = []
+            self._history[chat_id].append((question, answer, now))
+            # Trim to max_size
+            if len(self._history[chat_id]) > self.max_size:
+                self._history[chat_id] = self._history[chat_id][-self.max_size:]
+            # Remove expired
+            self._history[chat_id] = [
+                (q, a, t) for q, a, t in self._history[chat_id]
+                if now - t < self.ttl
+            ]
+
+    def get_context(self, chat_id: str) -> List[Tuple[str, str]]:
+        with self._lock:
+            now = time.time()
+            if chat_id not in self._history:
+                return []
+            # Filter expired
+            valid = [(q, a) for q, a, t in self._history[chat_id] if now - t < self.ttl]
+            return valid[-self.max_size:]
+
+    def clear(self, chat_id: str) -> None:
+        with self._lock:
+            if chat_id in self._history:
+                del self._history[chat_id]
+
+
 class RAGSystem:
     def __init__(self):
         # Embeddings and the Qdrant connection are created in `initialize`,
@@ -147,6 +286,12 @@ class RAGSystem:
         # Single-flight: identical concurrent questions share one LLM call.
         self._inflight: Dict[str, threading.Event] = {}
         self._inflight_lock = threading.Lock()
+
+        # Conversation memory
+        self.conversation = ConversationMemory(
+            max_size=config.CONVERSATION_MEMORY_SIZE,
+            ttl=config.CONVERSATION_TTL,
+        )
 
     # ------------------------------------------------------------- lifecycle
     @property
@@ -345,6 +490,15 @@ class RAGSystem:
         self.vector_manager.add_documents(splits)
         for pdf_file in loaded_files:
             self.vector_manager.add_processed_file(pdf_file)
+
+        # Also extract structured data if enabled
+        if config.ENABLE_TABLE_EXTRACTION:
+            for pdf_file in loaded_files:
+                try:
+                    get_table_extractor().extract_from_pdf(pdf_file, force_reload=force_reload)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Table extraction failed for %s: %s", pdf_file.name, exc)
+
         self._refresh_chain()
         logger.info("Documents added to vector store")
 
@@ -411,16 +565,15 @@ class RAGSystem:
     def query(
         self,
         question: str,
+        chat_id: str = "",
         on_retry: Optional[Callable[[int, float, Exception], None]] = None,
     ) -> str:
         """Query the RAG system (non-streaming, with cache and retries)."""
         if not self._initialized or self.qa_chain is None:
-            QUERY_RESULTS.labels(result="not_ready").inc()
             return NOT_READY_MESSAGE
 
         cached = query_cache.get(question)
         if cached is not None:
-            QUERY_RESULTS.labels(result="cache_hit").inc()
             return cached
 
         key = query_cache.make_key(question)
@@ -435,28 +588,22 @@ class RAGSystem:
             # Another request is already answering this exact question.
             event.wait(timeout=config.LLM_TIMEOUT + 30)
             cached = query_cache.get(question)
-            QUERY_RESULTS.labels(result="coalesced").inc()
             return cached or "⏳ That answer is still being generated. Please try again."
 
         if not self._begin_query():
             with self._inflight_lock:
                 self._inflight.pop(key, None)
             event.set()
-            QUERY_RESULTS.labels(result="reindexing").inc()
             return REINDEXING_MESSAGE
 
-        started = time.perf_counter()
         try:
-            response = self._answer(question, on_retry)
+            response = self._answer(question, chat_id, on_retry)
             query_cache.set(question, response)
-            QUERY_RESULTS.labels(result="success").inc()
             return response
         except Exception as exc:  # noqa: BLE001
             logger.exception("Error querying RAG")
-            QUERY_RESULTS.labels(result="error").inc()
             return self._friendly_error(exc)
         finally:
-            QUERY_DURATION.observe(time.perf_counter() - started)
             with self._inflight_lock:
                 self._inflight.pop(key, None)
             event.set()
@@ -465,19 +612,89 @@ class RAGSystem:
     def _answer(
         self,
         question: str,
+        chat_id: str,
         on_retry: Optional[Callable[[int, float, Exception], None]] = None,
     ) -> str:
+        # First, try structured query if it looks like one
+        if config.ENABLE_TABLE_EXTRACTION and _looks_like_structured_query(question):
+            structured_result = self._try_structured_query(question)
+            if structured_result:
+                return structured_result
+
+        # Get conversation context
+        context_history = self.conversation.get_context(chat_id) if chat_id else []
+        context_str = ""
+        if context_history:
+            context_str = "\n".join(
+                f"Previous Q: {q}\nPrevious A: {a}" for q, a in context_history
+            )
+
         docs = self.retriever.invoke(question)
         context = "\n\n".join(doc.page_content for doc in docs)
+
+        # Add conversation context to the prompt
+        if context_str:
+            context = f"Conversation history:\n{context_str}\n\n---\n\nDocument context:\n{context}"
+
         response = self._invoke_with_retries(
             self.qa_chain,
             {"context": context, "question": question},
             on_retry,
         )
         response = (response or "").strip()
+
+        # Store in conversation memory
+        if chat_id:
+            self.conversation.add(chat_id, question, response)
+
         if config.SHOW_SOURCES:
             response += _format_sources(docs)
         return response
+
+    def _try_structured_query(self, question: str) -> Optional[str]:
+        """Try to answer using structured SQLite data."""
+        try:
+            q_lower = question.lower()
+            extractor = get_table_extractor()
+
+            # Count queries
+            if any(kw in q_lower for kw in ("how many", "count", "number of", "total")):
+                district = _extract_district(question)
+                if district:
+                    count = extractor.count_by_district(district)
+                    return f"There are **{count}** member(s) from **{district}** district.\n\n📊 Source: Structured data (SQLite)"
+                # General count
+                stats = extractor.get_stats()
+                return f"Total members in directory: **{stats['total_rows']}**.\n\n📊 Source: Structured data (SQLite)"
+
+            # Search by name
+            name = _extract_name(question)
+            if name:
+                rows = extractor.search_by_name(name)
+                if rows:
+                    return _format_structured_results(rows) + "\n\n📊 Source: Structured data (SQLite)"
+
+            # Search by mobile
+            mobile = _extract_mobile(question)
+            if mobile:
+                row = extractor.search_by_mobile(mobile)
+                if row:
+                    return _format_structured_results([row]) + "\n\n📊 Source: Structured data (SQLite)"
+
+            # District query
+            district = _extract_district(question)
+            if district:
+                rows = extractor.query(
+                    "SELECT s_no, name, mobile, address, district, pin FROM members WHERE district LIKE ? ORDER BY name LIMIT 20",
+                    (f"%{district}%",)
+                )
+                if rows:
+                    return _format_structured_results(rows) + "\n\n📊 Source: Structured data (SQLite)"
+
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Structured query failed: %s", exc)
+
+        return None
 
     def _invoke_with_retries(
         self,
@@ -544,18 +761,15 @@ class RAGSystem:
     ) -> str:
         """Query with streaming, sending coalesced bubbles to WhatsApp."""
         if not self._initialized or self.qa_chain is None:
-            QUERY_RESULTS.labels(result="not_ready").inc()
             await send_chunk_callback(chat_id, NOT_READY_MESSAGE)
             return NOT_READY_MESSAGE
 
         cached = query_cache.get(question)
         if cached is not None:
-            QUERY_RESULTS.labels(result="cache_hit").inc()
             await send_chunk_callback(chat_id, cached)
             return cached
 
         if not self._begin_query():
-            QUERY_RESULTS.labels(result="reindexing").inc()
             await send_chunk_callback(chat_id, REINDEXING_MESSAGE)
             return REINDEXING_MESSAGE
 
@@ -602,6 +816,10 @@ class RAGSystem:
                     response += sources
                     await send_chunk_callback(chat_id, sources.strip())
 
+            # Store in conversation memory
+            if chat_id:
+                self.conversation.add(chat_id, question, response)
+
             # Cache the full response
             query_cache.set(question, response)
             QUERY_RESULTS.labels(result="success").inc()
@@ -616,7 +834,7 @@ class RAGSystem:
                 return "".join(full)
             # Nothing was sent: use the non-streaming path (retries + fallback).
             try:
-                response = await asyncio.to_thread(self._answer, question, on_retry)
+                response = await asyncio.to_thread(self._answer, question, chat_id, on_retry)
                 await send_chunk_callback(chat_id, response)
                 query_cache.set(question, response)
                 return response
@@ -639,6 +857,7 @@ class RAGSystem:
             }
         try:
             count = self.vector_manager.count()
+            structured_stats = get_table_extractor().get_stats() if config.ENABLE_TABLE_EXTRACTION else {}
             return {
                 "document_count": count,
                 "processed_files": len(self.vector_manager.get_processed_files()),
@@ -646,6 +865,7 @@ class RAGSystem:
                 "vector_store": "qdrant",
                 "cache": cache_stats,
                 "rebuilding": self.rebuilding,
+                "structured": structured_stats,
             }
         except Exception as e:
             logger.error(f"Error getting stats: {e}")

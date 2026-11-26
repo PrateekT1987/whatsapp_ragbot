@@ -40,14 +40,22 @@ class Config:
     SHOW_SOURCES: bool = _env_bool("SHOW_SOURCES", "true")
 
     # ---------------------------------------------------------- Embeddings
-    # "local" (bundled ONNX MiniLM, free, no API key) or "openai"
+    # "local" (bundled ONNX MiniLM, free, no API key) or "openai" or "multilingual"
     EMBEDDING_PROVIDER: str = os.getenv("EMBEDDING_PROVIDER", "local")
     EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
+    # Multilingual model (intfloat/multilingual-e5-small, 384-dim)
+    MULTILINGUAL_MODEL: str = os.getenv("MULTILINGUAL_MODEL", "intfloat/multilingual-e5-small")
 
     # ---------------------------------------------------------- Vector Store (Qdrant only)
     QDRANT_URL: str = os.getenv("QDRANT_URL", "http://localhost:6333")
     QDRANT_API_KEY: str = os.getenv("QDRANT_API_KEY", "")
     QDRANT_COLLECTION: str = os.getenv("QDRANT_COLLECTION", "rag_documents")
+
+    # ---------------------------------------------------------- Structured Data (SQLite)
+    # Enable table extraction from PDFs
+    ENABLE_TABLE_EXTRACTION: bool = _env_bool("ENABLE_TABLE_EXTRACTION", "true")
+    # SQLite database path
+    STRUCTURED_DB_PATH: Path = Path(os.getenv("STRUCTURED_DB_PATH", "./cache/structured_data.sqlite"))
 
     # ---------------------------------------------------------- Caching
     # Enable semantic cache for query responses
@@ -58,6 +66,10 @@ class Config:
     CACHE_DIR: Path = Path(os.getenv("CACHE_DIR", "./cache"))
     # Exact-match cache for frequent questions (in-memory, very fast)
     EXACT_CACHE_SIZE: int = int(os.getenv("EXACT_CACHE_SIZE", "1000"))
+    # Semantic cache: embedding-based paraphrase matching
+    SEMANTIC_CACHE_ENABLED: bool = _env_bool("SEMANTIC_CACHE_ENABLED", "false")
+    SEMANTIC_CACHE_THRESHOLD: float = float(os.getenv("SEMANTIC_CACHE_THRESHOLD", "0.85"))
+    SEMANTIC_CACHE_MAX_ENTRIES: int = int(os.getenv("SEMANTIC_CACHE_MAX_ENTRIES", "500"))
 
     # ------------------------------------------------------------- Server
     PORT: int = int(os.getenv("PORT", "8000"))
@@ -82,6 +94,24 @@ class Config:
     STREAM_CHUNK_DELAY_MS: int = int(os.getenv("STREAM_CHUNK_DELAY_MS", "400"))
     # First retry delay for RAG/Qdrant initialization (doubles up to 60s).
     STARTUP_RETRY_SECONDS: int = int(os.getenv("STARTUP_RETRY_SECONDS", "2"))
+
+    # ------------------------------------------------------ Conversation
+    # Number of previous Q&A pairs to keep per chat for context
+    CONVERSATION_MEMORY_SIZE: int = int(os.getenv("CONVERSATION_MEMORY_SIZE", "3"))
+    # Max age of conversation history in seconds
+    CONVERSATION_TTL: int = int(os.getenv("CONVERSATION_TTL", "3600"))
+
+    # ---------------------------------------------------- Feedback
+    # Enable /good /bad feedback commands
+    FEEDBACK_ENABLED: bool = _env_bool("FEEDBACK_ENABLED", "true")
+    # Path to store feedback
+    FEEDBACK_DB_PATH: Path = Path(os.getenv("FEEDBACK_DB_PATH", "./cache/feedback.sqlite"))
+
+    # -------------------------------------------------- Voice Notes
+    # Enable Whisper transcription
+    WHISPER_ENABLED: bool = _env_bool("WHISPER_ENABLED", "false")
+    WHISPER_MODEL: str = os.getenv("WHISPER_MODEL", "tiny")  # tiny, base, small, medium, large
+    WHISPER_LANGUAGE: str = os.getenv("WHISPER_LANGUAGE", "")  # empty = auto-detect
 
     # ----------------------------------------------------------------- RAG
     DOCUMENTS_PATH: Path = Path(os.getenv("DOCUMENTS_PATH", "./documents"))

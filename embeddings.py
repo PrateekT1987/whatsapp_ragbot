@@ -6,6 +6,8 @@ to run and needs no API key.
 
 Set EMBEDDING_PROVIDER=openai to use OpenAI embeddings instead (requires
 OPENAI_API_KEY).
+Set EMBEDDING_PROVIDER=multilingual to use intfloat/multilingual-e5-small
+(384-dim, supports 100+ languages including Hindi/Kannada).
 """
 import logging
 import os
@@ -43,11 +45,38 @@ class LocalEmbeddings(Embeddings):
         return next(iter(self._model.query_embed(text))).tolist()
 
 
+class MultilingualEmbeddings(Embeddings):
+    """LangChain adapter for intfloat/multilingual-e5-small via fastembed.
+
+    384-dimensional, supports 100+ languages including Hindi, Kannada, etc.
+    """
+
+    def __init__(self) -> None:
+        from fastembed import TextEmbedding
+
+        model_name = config.MULTILINGUAL_MODEL
+        cache_dir = os.getenv("FASTEMBED_CACHE_PATH") or None
+        self._model = TextEmbedding(model_name=model_name, cache_dir=cache_dir)
+        logger.info("Using multilingual ONNX embeddings (%s)", model_name)
+
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        # E5 models expect "passage: " prefix for documents
+        prefixed = [f"passage: {t}" for t in texts]
+        return [vec.tolist() for vec in self._model.embed(prefixed)]
+
+    def embed_query(self, text: str) -> List[float]:
+        # E5 models expect "query: " prefix for queries
+        return next(iter(self._model.query_embed(f"query: {text}"))).tolist()
+
+
 def get_embeddings() -> Embeddings:
     provider = config.EMBEDDING_PROVIDER.lower()
 
     if provider == "local":
         return LocalEmbeddings()
+
+    if provider == "multilingual":
+        return MultilingualEmbeddings()
 
     if provider == "openai":
         from langchain_openai import OpenAIEmbeddings
@@ -60,5 +89,5 @@ def get_embeddings() -> Embeddings:
 
     raise ValueError(
         f"Unknown EMBEDDING_PROVIDER={config.EMBEDDING_PROVIDER!r}; "
-        "use 'local' or 'openai'"
+        "use 'local', 'multilingual', or 'openai'"
     )

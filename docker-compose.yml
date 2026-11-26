@@ -84,6 +84,8 @@ services:
       QDRANT_COLLECTION: rag_documents_personal
       FASTEMBED_CACHE_PATH: /model-cache
       CACHE_DIR: /app/cache/personal
+      STRUCTURED_DB_PATH: /app/cache/personal/structured_data.sqlite
+      ENABLE_TABLE_EXTRACTION: "true"
     volumes:
       - ./documents_personal:/app/documents
       - ./cache/personal:/app/cache/personal
@@ -162,6 +164,8 @@ services:
       QDRANT_COLLECTION: rag_documents_work
       FASTEMBED_CACHE_PATH: /model-cache
       CACHE_DIR: /app/cache/work
+      STRUCTURED_DB_PATH: /app/cache/work/structured_data.sqlite
+      ENABLE_TABLE_EXTRACTION: "true"
     volumes:
       - ./documents_work:/app/documents
       - ./cache/work:/app/cache/work
