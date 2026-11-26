@@ -478,12 +478,66 @@ Switch `LLM_MODEL` to another `:free` model or add credits.
 **Empty answers / wrong language** – the local MiniLM embedder is tuned for
 English; use `EMBEDDING_PROVIDER=openai` for multilingual corpora.
 
+## Backup & Recovery (runbook)
+
+### Qdrant snapshots
+Qdrant supports instant, consistent snapshots of a collection. Use the helper
+script:
+
+```bash
+# 1) Create + download a snapshot
+python backup_qdrant.py --create --collection rag_documents_personal --download --output ./backups
+
+# 2) List all snapshots
+python backup_qdrant.py --list
+
+# 3) Restore into a fresh collection (new name avoids mismatch)
+python backup_qdrant.py --restore ./backups/rag_documents_personal-<timestamp>.snapshot \
+       --collection rag_documents_personal_restored
+```
+
+- Snapshots are stored inside the container at `/qdrant/storage/snapshots/`.
+- The `docker compose` healthcheck hits `/readyz`; a healthy Qdrant can snapshot
+  while serving queries.
+- Schedule with cron (host or a sidecar container) if you want automated backups.
+
+### Full state recovery
+```bash
+# Stop everything
+docker compose down
+
+# Remove old data (if corrupted)
+rm -rf qdrant_data cache waha_sessions
+
+# Restore qdrant_data from your latest host backup
+# (tar/rsync/whatever you use for the ./qdrant_data directory)
+
+# Bring stack up
+docker compose up -d
+
+# Verify
+curl http://localhost:8001/ready
+curl http://localhost:8001/stats
+```
+
+### Per-bot cache
+Each bot now has its own cache directory (`./cache/personal`, `./cache/work`)
+so the two containers never share the same `diskcache` SQLite file. If you need
+to clear one bot's cache without touching the other:
+
+```bash
+rm -rf cache/personal   # or cache/work
+docker compose restart bot-personal
+```
+
 ## Security
 
 - `.env`, `.env.personal`, `.env.work`, `waha_sessions/`, `qdrant_data/` and
   `cache/` are git-ignored – never commit them. `.dockerignore` also excludes
   them, so secrets and PDFs are never copied into an image.
-- Every published port binds to `127.0.0.1`. Use SSH port forwarding for remote
+- Every published port binds to `127.0.0.1` on the **host**. Inside the Docker
+  network the containers bind to `0.0.0.0`; the loopback publish keeps the
+  services off the external interface. Use SSH port forwarding for remote
   access; do not change these to `0.0.0.0` unless you add a firewall.
 - Qdrant requires `QDRANT_API_KEY` (set in `.env`, injected into Qdrant and both
   bots). Use the same key in the dashboard URL.
@@ -491,8 +545,8 @@ English; use `EMBEDDING_PROVIDER=openai` for multilingual corpora.
   match `WAHA_HMAC_KEY` in `.env.personal`/`.env.work`.
 - Set a strong WAHA API key and dashboard password per session.
 - Keep `WAHA_SELF_CHAT_ONLY=true` so the bot never replies to other people.
-- The bot's own HTTP API (`/send`, `/reload`, `/webhook/test`) has no
-  authentication; it is safe only because it is loopback-bound.
+- The bot's own HTTP API (`/send`, `/reload`, `/webhook/test`, `/metrics`) has
+  no authentication; it is safe only because it is loopback-bound.
 
 ## License
 

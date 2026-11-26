@@ -24,6 +24,7 @@ import httpx
 from config import config
 from cache import session_cache
 from formatting import to_whatsapp
+from metrics import WAHA_SENDS
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,35 @@ def _user_part(jid: Optional[str]) -> Optional[str]:
 
 def _fingerprint(text: str) -> str:
     return hashlib.sha1(text.strip().encode("utf-8")).hexdigest()
+
+
+def _is_self_chat_payload(
+    payload: dict,
+    me_id: Optional[str],
+    me_lid: Optional[str],
+) -> bool:
+    """Pure self-chat check, kept separate so it can be unit tested.
+
+    A "Message Yourself" message is `fromMe`, and its chat id is our own phone
+    JID (`@c.us`) or LID (`@lid`). When the session id is unavailable, sender
+    and recipient being the same account is a safe fallback.
+    """
+    if not payload.get("fromMe"):
+        return False
+
+    chat_id = payload.get("chatId") or payload.get("from")
+
+    if me_id and _user_part(chat_id) == _user_part(me_id):
+        return True
+
+    if me_lid and chat_id and _user_part(chat_id) == _user_part(me_lid):
+        return True
+
+    sender = payload.get("from")
+    recipient = payload.get("to")
+    return bool(
+        sender and recipient and _user_part(sender) == _user_part(recipient)
+    )
 
 
 def extract_message_id(payload: Dict[str, Any] | None) -> Optional[str]:
@@ -270,27 +300,8 @@ class WAHAClient:
 
     async def is_self_chat(self, payload: dict) -> bool:
         """True when the message was written in the 'Message Yourself' chat."""
-        if not payload.get("fromMe"):
-            return False
-
-        chat_id = payload.get("chatId") or payload.get("from")
-
         me_id = await self.get_me_id()
-        if me_id and _user_part(chat_id) == _user_part(me_id):
-            return True
-
-        # Also compare against the LID if available.
-        if self._me_lid and chat_id:
-            if _user_part(chat_id) == _user_part(self._me_lid):
-                return True
-
-        # Fallback for payloads without a resolvable session id: in the
-        # self-chat sender and recipient are the same account.
-        sender = payload.get("from")
-        recipient = payload.get("to")
-        return bool(
-            sender and recipient and _user_part(sender) == _user_part(recipient)
-        )
+        return _is_self_chat_payload(payload, me_id, self._me_lid)
 
     # ------------------------------------------------------------ messaging
     async def _post(
@@ -341,9 +352,11 @@ class WAHAClient:
             {"session": self.session, "chatId": chat_id, "text": text},
         )
         if data is None:
+            WAHA_SENDS.labels(result="error").inc()
             return False
 
         self.remember_outgoing(text, extract_message_id(data))
+        WAHA_SENDS.labels(result="sent").inc()
         logger.info("Sent reply to %s (%d chars)", chat_id, len(text))
         return True
 

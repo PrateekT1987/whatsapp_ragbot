@@ -7,7 +7,7 @@ project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 
 from config import config
-from rag import RAGSystem
+from rag import rag_system
 
 
 def main() -> int:
@@ -32,19 +32,18 @@ def main() -> int:
     print(f"📄 {len(pdf_files)} PDF file(s)")
     print(f"🔎 Embeddings: {config.EMBEDDING_PROVIDER}")
 
-    rag = RAGSystem()
-    rag.initialize()
+    rag_system.initialize()
 
     print("📥 Indexing...")
-    count = rag.load_documents()
+    count = rag_system.load_documents()
     print(f"✅ Indexed {count} file(s)")
 
-    stats = rag.get_stats()
+    stats = rag_system.get_stats()
     print(f"📊 Chunks: {stats.get('document_count', 0)} | Files: {stats.get('processed_files', 0)}")
 
     question = "What is this document about?"
     print(f"\n💬 Q: {question}")
-    print(f"💬 A: {rag.query(question)[:500]}")
+    print(f"💬 A: {rag_system.query(question)[:500]}")
 
     print("\n✅ RAG pipeline OK")
     return 0

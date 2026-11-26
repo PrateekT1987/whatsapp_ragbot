@@ -19,6 +19,12 @@ from config import config
 from embeddings import get_embeddings
 from vectorstore import QdrantVectorStoreManager
 from cache import query_cache
+from metrics import (
+    LLM_ERRORS,
+    LLM_RETRIES,
+    QUERY_DURATION,
+    QUERY_RESULTS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -409,10 +415,12 @@ class RAGSystem:
     ) -> str:
         """Query the RAG system (non-streaming, with cache and retries)."""
         if not self._initialized or self.qa_chain is None:
+            QUERY_RESULTS.labels(result="not_ready").inc()
             return NOT_READY_MESSAGE
 
         cached = query_cache.get(question)
         if cached is not None:
+            QUERY_RESULTS.labels(result="cache_hit").inc()
             return cached
 
         key = query_cache.make_key(question)
@@ -427,22 +435,28 @@ class RAGSystem:
             # Another request is already answering this exact question.
             event.wait(timeout=config.LLM_TIMEOUT + 30)
             cached = query_cache.get(question)
+            QUERY_RESULTS.labels(result="coalesced").inc()
             return cached or "⏳ That answer is still being generated. Please try again."
 
         if not self._begin_query():
             with self._inflight_lock:
                 self._inflight.pop(key, None)
             event.set()
+            QUERY_RESULTS.labels(result="reindexing").inc()
             return REINDEXING_MESSAGE
 
+        started = time.perf_counter()
         try:
             response = self._answer(question, on_retry)
             query_cache.set(question, response)
+            QUERY_RESULTS.labels(result="success").inc()
             return response
         except Exception as exc:  # noqa: BLE001
             logger.exception("Error querying RAG")
+            QUERY_RESULTS.labels(result="error").inc()
             return self._friendly_error(exc)
         finally:
+            QUERY_DURATION.observe(time.perf_counter() - started)
             with self._inflight_lock:
                 self._inflight.pop(key, None)
             event.set()
@@ -487,6 +501,7 @@ class RAGSystem:
                     "LLM call failed (%s); retry %s/%s in %.1fs",
                     exc, attempt + 1, attempts - 1, delay,
                 )
+                LLM_RETRIES.inc()
                 if on_retry is not None:
                     on_retry(attempt + 1, delay, exc)
                 time.sleep(delay)
@@ -503,11 +518,15 @@ class RAGSystem:
                     if attempt + 1 >= attempts or not _is_retryable(exc):
                         break
                     delay = _retry_delay(attempt, config.LLM_RETRY_BASE_SECONDS)
+                    LLM_RETRIES.inc()
                     if on_retry is not None:
                         on_retry(attempt + 1, delay, exc)
                     time.sleep(delay)
 
         if last_exc is not None:
+            LLM_ERRORS.labels(
+                kind="rate_limit" if _is_rate_limit(last_exc) else "other"
+            ).inc()
             raise last_exc
         raise RuntimeError("LLM call failed")
 
@@ -525,18 +544,22 @@ class RAGSystem:
     ) -> str:
         """Query with streaming, sending coalesced bubbles to WhatsApp."""
         if not self._initialized or self.qa_chain is None:
+            QUERY_RESULTS.labels(result="not_ready").inc()
             await send_chunk_callback(chat_id, NOT_READY_MESSAGE)
             return NOT_READY_MESSAGE
 
         cached = query_cache.get(question)
         if cached is not None:
+            QUERY_RESULTS.labels(result="cache_hit").inc()
             await send_chunk_callback(chat_id, cached)
             return cached
 
         if not self._begin_query():
+            QUERY_RESULTS.labels(result="reindexing").inc()
             await send_chunk_callback(chat_id, REINDEXING_MESSAGE)
             return REINDEXING_MESSAGE
 
+        started = time.perf_counter()
         full: List[str] = []
         try:
             chain = self._create_streaming_chain()
@@ -581,9 +604,11 @@ class RAGSystem:
 
             # Cache the full response
             query_cache.set(question, response)
+            QUERY_RESULTS.labels(result="success").inc()
             return response
         except Exception as exc:  # noqa: BLE001
             logger.exception("Error in streaming query")
+            QUERY_RESULTS.labels(result="error").inc()
             if full:
                 # Part of the answer already reached the user; do not repeat it.
                 notice = "⚠️ The answer was cut off. Please ask again."
@@ -600,6 +625,7 @@ class RAGSystem:
                 await send_chunk_callback(chat_id, message)
                 return message
         finally:
+            QUERY_DURATION.observe(time.perf_counter() - started)
             self._end_query()
 
     def get_stats(self) -> dict:

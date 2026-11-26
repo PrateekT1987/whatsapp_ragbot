@@ -9,6 +9,7 @@ from typing import Any, Dict, Optional
 import diskcache
 
 from config import config
+from metrics import CACHE_EVENTS
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +69,7 @@ class QueryCache:
                 self.exact_cache.move_to_end(key)
                 self.exact_cache[key] = (value, now)
                 self.hits += 1
+                CACHE_EVENTS.labels(result="hit").inc()
                 return value
             del self.exact_cache[key]
 
@@ -83,11 +85,13 @@ class QueryCache:
                 except Exception:  # noqa: BLE001 - touch is best effort
                     pass
                 self.hits += 1
+                CACHE_EVENTS.labels(result="hit").inc()
                 return value
         except Exception as e:
             logger.warning(f"Disk cache read error: {e}")
 
         self.misses += 1
+        CACHE_EVENTS.labels(result="miss").inc()
         return None
 
     def set(self, question: str, response: str) -> None:

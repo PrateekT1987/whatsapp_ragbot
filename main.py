@@ -9,17 +9,25 @@ from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from config import config
 from rag import rag_system
 from waha import extract_message_id, waha
 from watcher import document_watcher
 from cache import query_cache
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+from logging_utils import (
+    configure_logging,
+    new_request_id,
+    request_id_var,
 )
+from metrics import (
+    HTTP_DURATION,
+    HTTP_REQUESTS,
+    WEBHOOK_EVENTS,
+)
+
+configure_logging(config.LOG_LEVEL)
 logger = logging.getLogger(__name__)
 
 # Keep strong references to background tasks so they are not garbage collected.
@@ -127,6 +135,26 @@ def _payload_session(data: dict, payload: dict) -> Optional[str]:
     return None
 
 
+def verify_webhook_signature(
+    raw: bytes,
+    signature: str,
+    algorithm: str,
+    key: str,
+) -> bool:
+    """Return True when *signature* is the HMAC of *raw*.
+
+    An empty key disables verification (matches the endpoint's optional HMAC).
+    Raises ValueError for an unsupported algorithm.
+    """
+    if not key:
+        return True
+    digest = getattr(hashlib, algorithm, None)
+    if digest is None:
+        raise ValueError(f"unsupported HMAC algorithm: {algorithm}")
+    expected = hmac.new(key.encode("utf-8"), raw, digest).hexdigest()
+    return hmac.compare_digest(signature, expected)
+
+
 _dispatcher = ChatDispatcher(
     config.MAX_CONCURRENT_QUERIES, config.MAX_QUEUED_PER_CHAT
 )
@@ -179,6 +207,17 @@ _streaming_sessions: dict[str, list[str]] = {}
 
 
 async def process_message(payload: dict) -> None:
+    """Run a queued message with the request id it arrived with."""
+    request_id = payload.get("_request_id")
+    token = request_id_var.set(request_id) if request_id else None
+    try:
+        await _process_message(payload)
+    finally:
+        if token is not None:
+            request_id_var.reset(token)
+
+
+async def _process_message(payload: dict) -> None:
     """Decide whether an incoming WAHA message is a question for the bot."""
     message_id = extract_message_id(payload)
 
@@ -208,8 +247,12 @@ async def process_message(payload: dict) -> None:
     if not chat_id:
         return
 
-    logger.info("Question from %s (chatId: %s): %s",
-                payload.get("from"), payload.get("chatId"), body[:120])
+    # Privacy: question text is only logged when explicitly enabled.
+    if config.LOG_QUESTION_TEXT:
+        logger.info("Question from %s (chatId: %s): %s",
+                    payload.get("from"), payload.get("chatId"), body[:120])
+    else:
+        logger.info("Question from %s (%d chars)", payload.get("from"), len(body))
 
     try:
         reply = await _handle_command(body)
@@ -355,14 +398,49 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="RAG WhatsApp Bot (WAHA)",
     description="Self-chat RAG assistant on WhatsApp using WAHA + FastAPI + LangChain",
-    version="2.0.0",
+    version="2.1.0",
     lifespan=lifespan,
 )
 
 
+@app.middleware("http")
+async def request_context(request: Request, call_next):
+    """Attach a request id, log latency and record HTTP metrics."""
+    request_id = request.headers.get("X-Request-ID") or new_request_id()
+    token = request_id_var.set(request_id)
+    started = time.perf_counter()
+    status = 500
+
+    try:
+        response = await call_next(request)
+        status = response.status_code
+        response.headers["X-Request-ID"] = request_id
+        return response
+    finally:
+        duration = time.perf_counter() - started
+        route = request.scope.get("route")
+        path = getattr(route, "path", "unmatched")
+        HTTP_REQUESTS.labels(
+            method=request.method, path=path, status=str(status)
+        ).inc()
+        HTTP_DURATION.labels(method=request.method, path=path).observe(duration)
+        if path != "/metrics":
+            logger.info(
+                "HTTP %s %s -> %s in %.0f ms",
+                request.method, path, status, duration * 1000,
+            )
+        request_id_var.reset(token)
+
+
+@app.get("/metrics")
+async def metrics():
+    """Prometheus scrape endpoint."""
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+
 @app.get("/")
 async def root():
-    return {"status": "ok", "service": "RAG WhatsApp Bot", "version": "2.0.0"}
+    return {"status": "ok", "service": "RAG WhatsApp Bot", "version": "2.1.0"}
 
 
 @app.get("/health")
@@ -437,15 +515,17 @@ async def waha_webhook(request: Request):
             "X-Webhook-Hmac", request.headers.get("X-Hmac-Signature", "")
         )
         algorithm = request.headers.get("X-Webhook-Hmac-Algorithm", "sha512").lower()
-        digest = getattr(hashlib, algorithm, None)
-        if digest is None:
-            logger.warning("Rejected webhook with unsupported HMAC algorithm: %s", algorithm)
+        try:
+            valid = verify_webhook_signature(
+                raw, signature, algorithm, config.WAHA_HMAC_KEY
+            )
+        except ValueError as exc:
+            logger.warning("Rejected webhook: %s", exc)
+            WEBHOOK_EVENTS.labels(result="bad_algorithm").inc()
             raise HTTPException(status_code=401, detail="Unsupported signature algorithm")
-        expected = hmac.new(
-            config.WAHA_HMAC_KEY.encode("utf-8"), raw, digest
-        ).hexdigest()
-        if not hmac.compare_digest(signature, expected):
+        if not valid:
             logger.warning("Rejected webhook with invalid HMAC signature")
+            WEBHOOK_EVENTS.labels(result="invalid_signature").inc()
             raise HTTPException(status_code=401, detail="Invalid signature")
 
     try:
@@ -458,10 +538,12 @@ async def waha_webhook(request: Request):
     # WAHA emits `message` for incoming and `message.any` for everything,
     # including our own outgoing messages - self-chat messages are outgoing.
     if event not in ("message", "message.any"):
+        WEBHOOK_EVENTS.labels(result="ignored_event").inc()
         return JSONResponse({"status": "ignored", "event": event})
 
     payload = data.get("payload") or {}
     if not isinstance(payload, dict):
+        WEBHOOK_EVENTS.labels(result="invalid_payload").inc()
         return JSONResponse({"status": "ignored", "reason": "invalid payload"})
 
     # Cross-bot guard: a shared webhook URL or a misconfigured WAHA instance
@@ -472,6 +554,7 @@ async def waha_webhook(request: Request):
             "Rejected webhook for session %r (expected %r)",
             incoming_session, config.WAHA_SESSION,
         )
+        WEBHOOK_EVENTS.labels(result="session_mismatch").inc()
         return JSONResponse(
             status_code=403,
             content={"status": "ignored", "reason": "session mismatch"},
@@ -479,17 +562,23 @@ async def waha_webhook(request: Request):
 
     chat_id = payload.get("from") or payload.get("chatId")
     if not chat_id:
+        WEBHOOK_EVENTS.labels(result="no_chat_id").inc()
         return JSONResponse({"status": "ignored", "reason": "no chat id"})
+
+    # Carry the HTTP request id into the queued background work.
+    payload = {**payload, "_request_id": request_id_var.get()}
 
     # Answer WAHA fast; the per-chat queue does the slow RAG work in order.
     if not _dispatcher.submit(chat_id, payload):
         logger.warning("Queue full for %s; dropping message", chat_id)
+        WEBHOOK_EVENTS.labels(result="queue_full").inc()
         _notify_busy(chat_id)
         return JSONResponse(
             status_code=429,
             content={"status": "busy", "reason": "chat queue full"},
         )
 
+    WEBHOOK_EVENTS.labels(result="queued").inc()
     return JSONResponse({"status": "queued"})
 
 

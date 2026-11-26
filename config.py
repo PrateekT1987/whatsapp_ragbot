@@ -60,11 +60,18 @@ class Config:
     EXACT_CACHE_SIZE: int = int(os.getenv("EXACT_CACHE_SIZE", "1000"))
 
     # ------------------------------------------------------------- Server
-    WEBHOOK_URL: str = os.getenv("WEBHOOK_URL", "")
     PORT: int = int(os.getenv("PORT", "8000"))
     HOST: str = os.getenv("HOST", "0.0.0.0")
     # Development only: restart on .py changes. Never enable in production.
-    UVICORN_RELOAD: bool = _env_bool("UVICORN_RELOAD", "false")
+    # `RELOAD` is accepted as an alias for older deployments.
+    UVICORN_RELOAD: bool = _env_bool(
+        "UVICORN_RELOAD", os.getenv("RELOAD", "false")
+    )
+
+    # ----------------------------------------------------------- Logging
+    LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO").upper()
+    # Question text is private by default: log only its length at INFO.
+    LOG_QUESTION_TEXT: bool = _env_bool("LOG_QUESTION_TEXT", "false")
 
     # -------------------------------------------------------- Concurrency
     # At most this many LLM calls run at once across all chats.
