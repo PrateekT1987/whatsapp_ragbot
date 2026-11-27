@@ -403,6 +403,7 @@ whatsapp_bot/
 ├── cache.py           # query cache (memory + disk) and session cache
 ├── formatting.py      # Markdown → WhatsApp markup conversion
 ├── embeddings.py      # local ONNX or OpenAI embeddings
+├── voice.py           # voice-note download + local Whisper transcription
 ├── watcher.py         # auto re-index on file changes
 ├── config.py          # environment configuration
 ├── run.py             # preflight checks + uvicorn
@@ -414,6 +415,7 @@ whatsapp_bot/
 ├── documents_work/      # work PDFs           (git-ignored)
 ├── qdrant_data/         # vector data         (generated, git-ignored)
 ├── cache/               # disk cache          (generated, git-ignored)
+├── waha_media/          # downloaded voice notes (generated, git-ignored)
 └── waha_sessions/       # WhatsApp sessions   (generated, git-ignored)
 ```
 
