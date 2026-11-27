@@ -14,9 +14,7 @@ request_id_var: contextvars.ContextVar[str] = contextvars.ContextVar(
     "request_id", default="-"
 )
 
-_LOG_FORMAT = (
-    "%(asctime)s - %(name)s - %(levelname)s - [%(request_id)s] - %(message)s"
-)
+_LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - [%(request_id)s] - %(message)s"
 
 
 def new_request_id() -> str:

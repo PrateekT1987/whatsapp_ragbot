@@ -5,10 +5,12 @@ index is updated only once the folder has been quiet for a few seconds. Files
 that are still being written are detected with a size/mtime stability check.
 Only new or changed files are embedded; removing a PDF drops its chunks.
 """
+
 import logging
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
@@ -37,7 +39,7 @@ class DocumentWatcher:
     """Debounced, single-worker index rebuilds."""
 
     def __init__(self, debounce_seconds: float = 3.0) -> None:
-        self.observer: Observer | None = None
+        self.observer: Any = None
         self._timer: threading.Timer | None = None
         self._lock = threading.Lock()
         self._debounce = debounce_seconds
@@ -120,7 +122,9 @@ class DocumentWatcher:
             logger.info("Created documents directory: %s", config.DOCUMENTS_PATH)
 
         self.observer = Observer()
-        self.observer.schedule(self._handler, str(config.DOCUMENTS_PATH), recursive=False)
+        self.observer.schedule(
+            self._handler, str(config.DOCUMENTS_PATH), recursive=False
+        )
         self.observer.start()
         logger.info("Started watching %s for changes", config.DOCUMENTS_PATH)
 

@@ -8,6 +8,7 @@ Sending raw Markdown leaves literal ``**`` and backticks in the chat, so every
 outgoing message is normalised here before it is sent (and before its echo
 fingerprint is recorded).
 """
+
 import re
 
 _FENCED_CODE = re.compile(r"```[ \t]*([A-Za-z0-9_+-]*)[ \t]*\n?(.*?)```", re.S)

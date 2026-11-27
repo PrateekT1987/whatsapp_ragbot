@@ -9,6 +9,7 @@ OPENAI_API_KEY).
 Set EMBEDDING_PROVIDER=multilingual to use intfloat/multilingual-e5-small
 (384-dim, supports 100+ languages including Hindi/Kannada).
 """
+
 import logging
 import os
 from typing import List
@@ -39,10 +40,11 @@ class LocalEmbeddings(Embeddings):
         logger.info("Using local ONNX embeddings (%s)", model_name)
 
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
-        return [vec.tolist() for vec in self._model.embed(texts)]
+        return [list(map(float, vec)) for vec in self._model.embed(texts)]
 
     def embed_query(self, text: str) -> List[float]:
-        return next(iter(self._model.query_embed(text))).tolist()
+        vector = next(iter(self._model.query_embed(text)))
+        return list(map(float, vector))
 
 
 class MultilingualEmbeddings(Embeddings):
@@ -62,11 +64,12 @@ class MultilingualEmbeddings(Embeddings):
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
         # E5 models expect "passage: " prefix for documents
         prefixed = [f"passage: {t}" for t in texts]
-        return [vec.tolist() for vec in self._model.embed(prefixed)]
+        return [list(map(float, vec)) for vec in self._model.embed(prefixed)]
 
     def embed_query(self, text: str) -> List[float]:
         # E5 models expect "query: " prefix for queries
-        return next(iter(self._model.query_embed(f"query: {text}"))).tolist()
+        vector = next(iter(self._model.query_embed(f"query: {text}")))
+        return list(map(float, vector))
 
 
 def get_embeddings() -> Embeddings:

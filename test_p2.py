@@ -149,9 +149,7 @@ class SourceTests(unittest.TestCase):
                 metadata={"source": "handbook.pdf", "page": 4},
             )
         ]
-        self.assertEqual(
-            _format_sources(docs), "\n\n📄 Source: handbook.pdf, page 5"
-        )
+        self.assertEqual(_format_sources(docs), "\n\n📄 Source: handbook.pdf, page 5")
 
     def test_deduplicates_and_limits(self):
         docs = [
@@ -213,6 +211,7 @@ class WahaUtilsTests(unittest.TestCase):
         expected = hashlib.sha512(key.encode() + body).hexdigest()
         # Note: verify_webhook_signature uses hmac.new(key, body, sha512)
         import hmac
+
         expected = hmac.new(key.encode(), body, "sha512").hexdigest()
 
         self.assertTrue(verify_webhook_signature(body, expected, "sha512", key))
@@ -235,6 +234,39 @@ class HMACTests(unittest.TestCase):
         body = b"{}"
         with self.assertRaises(ValueError):
             verify_webhook_signature(body, "sig", "unsupported_algo", "key")
+
+
+class VoiceTests(unittest.TestCase):
+    def test_media_path_extracted_from_url(self):
+        from voice import _media_file_path
+
+        payload = {
+            "media": {
+                "url": "http://localhost:3000/api/files/personal/abc123.ogg",
+                "mimetype": "audio/ogg; codecs=opus",
+            }
+        }
+        self.assertEqual(_media_file_path(payload), "/api/files/personal/abc123.ogg")
+
+    def test_media_path_missing(self):
+        from voice import _media_file_path
+
+        self.assertIsNone(_media_file_path({}))
+        self.assertIsNone(_media_file_path({"media": {"error": "boom"}}))
+        self.assertIsNone(_media_file_path({"media": {"url": "https://x/y.ogg"}}))
+
+    def test_voice_disabled_returns_none(self):
+        import asyncio
+
+        import voice
+
+        original = voice.config.WHISPER_ENABLED
+        voice.config.WHISPER_ENABLED = False
+        try:
+            result = asyncio.run(voice.handle_voice_note(None, {}, "chat"))
+        finally:
+            voice.config.WHISPER_ENABLED = original
+        self.assertIsNone(result)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Validate configuration and start the RAG WhatsApp bot."""
+
 import sys
 import uvicorn
 from pathlib import Path

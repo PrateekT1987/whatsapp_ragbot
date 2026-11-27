@@ -49,8 +49,13 @@ services:
       WAHA_PRINT_QR: "false"
       WAHA_DASHBOARD_USERNAME: ${WAHA_DASHBOARD_USERNAME_PERSONAL:-admin}
       WAHA_DASHBOARD_PASSWORD: ${WAHA_DASHBOARD_PASSWORD_PERSONAL:-}
+      # Voice notes must be downloaded to disk so the bot can fetch them.
+      WHATSAPP_DOWNLOAD_MEDIA: "true"
+      WHATSAPP_FILES_FOLDER: /app/.media
+      WHATSAPP_FILES_LIFETIME: "600"
     volumes:
       - ./waha_sessions/personal:/app/.sessions
+      - ./waha_media/personal:/app/.media
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -128,8 +133,13 @@ services:
       WAHA_PRINT_QR: "false"
       WAHA_DASHBOARD_USERNAME: ${WAHA_DASHBOARD_USERNAME_WORK:-admin}
       WAHA_DASHBOARD_PASSWORD: ${WAHA_DASHBOARD_PASSWORD_WORK:-}
+      # Voice notes must be downloaded to disk so the bot can fetch them.
+      WHATSAPP_DOWNLOAD_MEDIA: "true"
+      WHATSAPP_FILES_FOLDER: /app/.media
+      WHATSAPP_FILES_LIFETIME: "600"
     volumes:
       - ./waha_sessions/work:/app/.sessions
+      - ./waha_media/work:/app/.media
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -189,5 +199,3 @@ services:
           cpus: "2"
           memory: 2G
 
-volumes:
-  fastembed_cache:

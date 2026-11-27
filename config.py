@@ -25,7 +25,9 @@ class Config:
     # "openrouter" (default here) or "openai"
     LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "openrouter")
     OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY", "")
-    OPENROUTER_BASE_URL: str = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+    OPENROUTER_BASE_URL: str = os.getenv(
+        "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"
+    )
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
     LLM_MODEL: str = os.getenv("LLM_MODEL", "nvidia/nemotron-3-ultra-550b-a55b:free")
     # Optional second :free model used when the primary stays rate-limited.
@@ -44,7 +46,9 @@ class Config:
     EMBEDDING_PROVIDER: str = os.getenv("EMBEDDING_PROVIDER", "local")
     EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
     # Multilingual model (intfloat/multilingual-e5-small, 384-dim)
-    MULTILINGUAL_MODEL: str = os.getenv("MULTILINGUAL_MODEL", "intfloat/multilingual-e5-small")
+    MULTILINGUAL_MODEL: str = os.getenv(
+        "MULTILINGUAL_MODEL", "intfloat/multilingual-e5-small"
+    )
 
     # ---------------------------------------------------------- Vector Store (Qdrant only)
     QDRANT_URL: str = os.getenv("QDRANT_URL", "http://localhost:6333")
@@ -55,7 +59,9 @@ class Config:
     # Enable table extraction from PDFs
     ENABLE_TABLE_EXTRACTION: bool = _env_bool("ENABLE_TABLE_EXTRACTION", "true")
     # SQLite database path
-    STRUCTURED_DB_PATH: Path = Path(os.getenv("STRUCTURED_DB_PATH", "./cache/structured_data.sqlite"))
+    STRUCTURED_DB_PATH: Path = Path(
+        os.getenv("STRUCTURED_DB_PATH", "./cache/structured_data.sqlite")
+    )
 
     # ---------------------------------------------------------- Caching
     # Enable semantic cache for query responses
@@ -68,17 +74,19 @@ class Config:
     EXACT_CACHE_SIZE: int = int(os.getenv("EXACT_CACHE_SIZE", "1000"))
     # Semantic cache: embedding-based paraphrase matching
     SEMANTIC_CACHE_ENABLED: bool = _env_bool("SEMANTIC_CACHE_ENABLED", "false")
-    SEMANTIC_CACHE_THRESHOLD: float = float(os.getenv("SEMANTIC_CACHE_THRESHOLD", "0.85"))
-    SEMANTIC_CACHE_MAX_ENTRIES: int = int(os.getenv("SEMANTIC_CACHE_MAX_ENTRIES", "500"))
+    SEMANTIC_CACHE_THRESHOLD: float = float(
+        os.getenv("SEMANTIC_CACHE_THRESHOLD", "0.85")
+    )
+    SEMANTIC_CACHE_MAX_ENTRIES: int = int(
+        os.getenv("SEMANTIC_CACHE_MAX_ENTRIES", "500")
+    )
 
     # ------------------------------------------------------------- Server
     PORT: int = int(os.getenv("PORT", "8000"))
     HOST: str = os.getenv("HOST", "0.0.0.0")
     # Development only: restart on .py changes. Never enable in production.
     # `RELOAD` is accepted as an alias for older deployments.
-    UVICORN_RELOAD: bool = _env_bool(
-        "UVICORN_RELOAD", os.getenv("RELOAD", "false")
-    )
+    UVICORN_RELOAD: bool = _env_bool("UVICORN_RELOAD", os.getenv("RELOAD", "false"))
 
     # ----------------------------------------------------------- Logging
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -105,12 +113,15 @@ class Config:
     # Enable /good /bad feedback commands
     FEEDBACK_ENABLED: bool = _env_bool("FEEDBACK_ENABLED", "true")
     # Path to store feedback
-    FEEDBACK_DB_PATH: Path = Path(os.getenv("FEEDBACK_DB_PATH", "./cache/feedback.sqlite"))
+    FEEDBACK_DB_PATH: Path = Path(
+        os.getenv("FEEDBACK_DB_PATH", "./cache/feedback.sqlite")
+    )
 
     # -------------------------------------------------- Voice Notes
-    # Enable Whisper transcription
-    WHISPER_ENABLED: bool = _env_bool("WHISPER_ENABLED", "false")
-    WHISPER_MODEL: str = os.getenv("WHISPER_MODEL", "tiny")  # tiny, base, small, medium, large
+    # Enable local transcription of WhatsApp voice notes.
+    WHISPER_ENABLED: bool = _env_bool("WHISPER_ENABLED", "true")
+    # tiny, base, small, medium, large (tiny is prefetched into the image).
+    WHISPER_MODEL: str = os.getenv("WHISPER_MODEL", "tiny")
     WHISPER_LANGUAGE: str = os.getenv("WHISPER_LANGUAGE", "")  # empty = auto-detect
 
     # ----------------------------------------------------------------- RAG

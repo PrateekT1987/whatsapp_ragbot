@@ -30,13 +30,15 @@ from metrics import (
 
 logger = logging.getLogger(__name__)
 
-REINDEXING_MESSAGE = "🔄 I'm rebuilding the index right now. Please ask again in a moment."
+REINDEXING_MESSAGE = (
+    "🔄 I'm rebuilding the index right now. Please ask again in a moment."
+)
 NOT_READY_MESSAGE = "⏳ I'm still starting up. Please try again in a moment."
 
 
 def _retry_delay(attempt: int, base: float) -> float:
     """Exponential backoff with jitter, capped so a chat is never stuck long."""
-    delay = base * (2 ** attempt)
+    delay = base * (2**attempt)
     return min(30.0, delay + random.uniform(0, base))
 
 
@@ -88,7 +90,7 @@ def _format_sources(docs: List[Document], limit: int = 3) -> str:
         if page is None:
             page = meta.get("page_number")
         try:
-            page = int(page) + 1  # PyPDFLoader pages are 0-based
+            page = int(page) + 1 if page is not None else None
         except (TypeError, ValueError):
             page = None
 
@@ -136,16 +138,52 @@ def _format_structured_results(rows: List[Dict[str, Any]], limit: int = 10) -> s
 
 # Keywords that suggest a structured query
 _STRUCTURED_KEYWORDS = {
-    "count", "how many", "number of", "total",
-    "mobile", "phone", "contact",
-    "address", "district", "pin", "pincode", "postal",
-    "member", "members",
-    "list", "show", "find",
-    "bidar", "kalaburagi", "gulbarga", "raichur", "hubballi", "mysore",
-    "bangalore", "belgaum", "dharwad", "shimoga", "tumkur", "udupi",
-    "hassan", "mandya", "kolar", "chikmagalur", "kodagu", "chamrajnagar",
-    "bijapur", "bagalkot", "haveri", "gadag", "koppal", "yadgir",
-    "chikkaballapur", "ramanagara", "chitradurga", "davangere", "uttara kannada",
+    "count",
+    "how many",
+    "number of",
+    "total",
+    "mobile",
+    "phone",
+    "contact",
+    "address",
+    "district",
+    "pin",
+    "pincode",
+    "postal",
+    "member",
+    "members",
+    "list",
+    "show",
+    "find",
+    "bidar",
+    "kalaburagi",
+    "gulbarga",
+    "raichur",
+    "hubballi",
+    "mysore",
+    "bangalore",
+    "belgaum",
+    "dharwad",
+    "shimoga",
+    "tumkur",
+    "udupi",
+    "hassan",
+    "mandya",
+    "kolar",
+    "chikmagalur",
+    "kodagu",
+    "chamrajnagar",
+    "bijapur",
+    "bagalkot",
+    "haveri",
+    "gadag",
+    "koppal",
+    "yadgir",
+    "chikkaballapur",
+    "ramanagara",
+    "chitradurga",
+    "davangere",
+    "uttara kannada",
     "dakshina kannada",
 }
 
@@ -166,12 +204,37 @@ def _looks_like_structured_query(question: str) -> bool:
 def _extract_district(question: str) -> Optional[str]:
     """Try to extract a district name from the question."""
     districts = [
-        "bagalkot", "bangalore", "bangalore rural", "belgaum", "bellary",
-        "bidar", "bijapur", "chamarajanagar", "chikkaballapur", "chikmagalur",
-        "chitradurga", "dakshina kannada", "davangere", "dharwad", "gadag",
-        "gulbarga", "hassan", "haveri", "kalaburagi", "kodagu", "kolar",
-        "koppal", "mandya", "mysore", "raichur", "ramanagara", "shimoga",
-        "tumkur", "udupi", "uttara kannada", "yadgir"
+        "bagalkot",
+        "bangalore",
+        "bangalore rural",
+        "belgaum",
+        "bellary",
+        "bidar",
+        "bijapur",
+        "chamarajanagar",
+        "chikkaballapur",
+        "chikmagalur",
+        "chitradurga",
+        "dakshina kannada",
+        "davangere",
+        "dharwad",
+        "gadag",
+        "gulbarga",
+        "hassan",
+        "haveri",
+        "kalaburagi",
+        "kodagu",
+        "kolar",
+        "koppal",
+        "mandya",
+        "mysore",
+        "raichur",
+        "ramanagara",
+        "shimoga",
+        "tumkur",
+        "udupi",
+        "uttara kannada",
+        "yadgir",
     ]
     q_lower = question.lower()
     for d in districts:
@@ -209,7 +272,9 @@ class ConversationMemory:
     def __init__(self, max_size: int = 3, ttl: int = 3600):
         self.max_size = max_size
         self.ttl = ttl
-        self._history: Dict[str, List[Tuple[str, str, float]]] = {}  # chat_id -> [(q, a, time)]
+        self._history: Dict[
+            str, List[Tuple[str, str, float]]
+        ] = {}  # chat_id -> [(q, a, time)]
         self._lock = threading.Lock()
 
     def add(self, chat_id: str, question: str, answer: str) -> None:
@@ -220,11 +285,10 @@ class ConversationMemory:
             self._history[chat_id].append((question, answer, now))
             # Trim to max_size
             if len(self._history[chat_id]) > self.max_size:
-                self._history[chat_id] = self._history[chat_id][-self.max_size:]
+                self._history[chat_id] = self._history[chat_id][-self.max_size :]
             # Remove expired
             self._history[chat_id] = [
-                (q, a, t) for q, a, t in self._history[chat_id]
-                if now - t < self.ttl
+                (q, a, t) for q, a, t in self._history[chat_id] if now - t < self.ttl
             ]
 
     def get_context(self, chat_id: str) -> List[Tuple[str, str]]:
@@ -234,7 +298,7 @@ class ConversationMemory:
                 return []
             # Filter expired
             valid = [(q, a) for q, a, t in self._history[chat_id] if now - t < self.ttl]
-            return valid[-self.max_size:]
+            return valid[-self.max_size :]
 
     def clear(self, chat_id: str) -> None:
         with self._lock:
@@ -251,10 +315,7 @@ class RAGSystem:
 
         self.llm = self._build_llm(config.LLM_MODEL, streaming=False)
         self._fallback_llm = None
-        if (
-            config.LLM_FALLBACK_MODEL
-            and config.LLM_FALLBACK_MODEL != config.LLM_MODEL
-        ):
+        if config.LLM_FALLBACK_MODEL and config.LLM_FALLBACK_MODEL != config.LLM_MODEL:
             self._fallback_llm = self._build_llm(
                 config.LLM_FALLBACK_MODEL, streaming=False
             )
@@ -359,9 +420,7 @@ class RAGSystem:
     def _get_streaming_llm(self) -> ChatOpenAI:
         """Get or create a streaming LLM instance."""
         if self._streaming_llm is None:
-            self._streaming_llm = self._build_llm(
-                config.LLM_MODEL, streaming=True
-            )
+            self._streaming_llm = self._build_llm(config.LLM_MODEL, streaming=True)
         return self._streaming_llm
 
     def _refresh_chain(self) -> None:
@@ -385,18 +444,22 @@ class RAGSystem:
 
     def _create_qa_chain(self, llm: ChatOpenAI) -> Any:
         """Create a RAG chain; retrieval is done explicitly in `_answer`."""
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", config.SYSTEM_PROMPT + "\n\nContext:\n{context}"),
-            ("human", "{question}")
-        ])
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", config.SYSTEM_PROMPT + "\n\nContext:\n{context}"),
+                ("human", "{question}"),
+            ]
+        )
         return prompt | llm | StrOutputParser()
 
     def _create_streaming_chain(self) -> Any:
         """Create a streaming chain for token-by-token output."""
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", config.SYSTEM_PROMPT + "\n\nContext:\n{context}"),
-            ("human", "{question}")
-        ])
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", config.SYSTEM_PROMPT + "\n\nContext:\n{context}"),
+                ("human", "{question}"),
+            ]
+        )
         return prompt | self._get_streaming_llm() | StrOutputParser()
 
     # --------------------------------------------------------------- indexing
@@ -434,19 +497,27 @@ class RAGSystem:
             # A changed PDF must have its old chunks removed before re-adding,
             # otherwise the index keeps both the stale and the new text.
             for pdf_file in pdf_files:
-                if self.vector_manager.has_record(pdf_file) and not self.vector_manager.is_processed(pdf_file):
+                if self.vector_manager.has_record(
+                    pdf_file
+                ) and not self.vector_manager.is_processed(pdf_file):
                     logger.info("PDF changed: %s; replacing its chunks", pdf_file.name)
                     try:
                         self.vector_manager.delete_file(pdf_file)
                     except Exception as exc:  # noqa: BLE001
-                        logger.warning("Could not remove old chunks for %s: %s", pdf_file.name, exc)
+                        logger.warning(
+                            "Could not remove old chunks for %s: %s", pdf_file.name, exc
+                        )
                     self.vector_manager.remove_processed_file(pdf_file)
 
         if not pdf_files:
             logger.info("No PDF files found in documents folder")
             return 0
 
-        new_files = [f for f in pdf_files if not self.vector_manager.is_processed(f) or force_reload]
+        new_files = [
+            f
+            for f in pdf_files
+            if not self.vector_manager.is_processed(f) or force_reload
+        ]
 
         if not new_files and not force_reload:
             logger.info("No new files to process")
@@ -494,9 +565,13 @@ class RAGSystem:
         if config.ENABLE_TABLE_EXTRACTION:
             for pdf_file in loaded_files:
                 try:
-                    get_table_extractor().extract_from_pdf(pdf_file, force_reload=force_reload)
+                    get_table_extractor().extract_from_pdf(
+                        pdf_file, force_reload=force_reload
+                    )
                 except Exception as exc:  # noqa: BLE001
-                    logger.warning("Table extraction failed for %s: %s", pdf_file.name, exc)
+                    logger.warning(
+                        "Table extraction failed for %s: %s", pdf_file.name, exc
+                    )
 
         self._refresh_chain()
         logger.info("Documents added to vector store")
@@ -582,12 +657,15 @@ class RAGSystem:
             if owner:
                 event = threading.Event()
                 self._inflight[key] = event
+        assert event is not None
 
         if not owner:
             # Another request is already answering this exact question.
             event.wait(timeout=config.LLM_TIMEOUT + 30)
             cached = query_cache.get(question)
-            return cached or "⏳ That answer is still being generated. Please try again."
+            return (
+                cached or "⏳ That answer is still being generated. Please try again."
+            )
 
         if not self._begin_query():
             with self._inflight_lock:
@@ -671,24 +749,33 @@ class RAGSystem:
             if name:
                 rows = extractor.search_by_name(name)
                 if rows:
-                    return _format_structured_results(rows) + "\n\n📊 Source: Structured data (SQLite)"
+                    return (
+                        _format_structured_results(rows)
+                        + "\n\n📊 Source: Structured data (SQLite)"
+                    )
 
             # Search by mobile
             mobile = _extract_mobile(question)
             if mobile:
                 row = extractor.search_by_mobile(mobile)
                 if row:
-                    return _format_structured_results([row]) + "\n\n📊 Source: Structured data (SQLite)"
+                    return (
+                        _format_structured_results([row])
+                        + "\n\n📊 Source: Structured data (SQLite)"
+                    )
 
             # District query
             district = _extract_district(question)
             if district:
                 rows = extractor.query(
                     "SELECT s_no, name, mobile, address, district, pin FROM members WHERE district LIKE ? ORDER BY name LIMIT 20",
-                    (f"%{district}%",)
+                    (f"%{district}%",),
                 )
                 if rows:
-                    return _format_structured_results(rows) + "\n\n📊 Source: Structured data (SQLite)"
+                    return (
+                        _format_structured_results(rows)
+                        + "\n\n📊 Source: Structured data (SQLite)"
+                    )
 
         except Exception as exc:  # noqa: BLE001
             logger.warning("Structured query failed: %s", exc)
@@ -715,7 +802,10 @@ class RAGSystem:
                 delay = _retry_delay(attempt, config.LLM_RETRY_BASE_SECONDS)
                 logger.warning(
                     "LLM call failed (%s); retry %s/%s in %.1fs",
-                    exc, attempt + 1, attempts - 1, delay,
+                    exc,
+                    attempt + 1,
+                    attempts - 1,
+                    delay,
                 )
                 LLM_RETRIES.inc()
                 if on_retry is not None:
@@ -748,7 +838,9 @@ class RAGSystem:
 
     def _friendly_error(self, exc: Exception) -> str:
         if _is_rate_limit(exc):
-            return "⏳ The model is rate-limited right now. Please try again in a minute."
+            return (
+                "⏳ The model is rate-limited right now. Please try again in a minute."
+            )
         return "❌ Sorry, I couldn't answer that right now. Please try again."
 
     async def query_streaming(
@@ -793,7 +885,9 @@ class RAGSystem:
                     if delay:
                         await asyncio.sleep(delay)
 
-            async for chunk in chain.astream({"context": context, "question": question}):
+            async for chunk in chain.astream(
+                {"context": context, "question": question}
+            ):
                 text = chunk.content if hasattr(chunk, "content") else str(chunk)
                 if not text:
                     continue
@@ -833,7 +927,9 @@ class RAGSystem:
                 return "".join(full)
             # Nothing was sent: use the non-streaming path (retries + fallback).
             try:
-                response = await asyncio.to_thread(self._answer, question, chat_id, on_retry)
+                response = await asyncio.to_thread(
+                    self._answer, question, chat_id, on_retry
+                )
                 await send_chunk_callback(chat_id, response)
                 query_cache.set(question, response)
                 return response
@@ -856,7 +952,11 @@ class RAGSystem:
             }
         try:
             count = self.vector_manager.count()
-            structured_stats = get_table_extractor().get_stats() if config.ENABLE_TABLE_EXTRACTION else {}
+            structured_stats = (
+                get_table_extractor().get_stats()
+                if config.ENABLE_TABLE_EXTRACTION
+                else {}
+            )
             return {
                 "document_count": count,
                 "processed_files": len(self.vector_manager.get_processed_files()),
@@ -868,7 +968,11 @@ class RAGSystem:
             }
         except Exception as e:
             logger.error(f"Error getting stats: {e}")
-            return {"error": str(e), "cache": cache_stats, "rebuilding": self.rebuilding}
+            return {
+                "error": str(e),
+                "cache": cache_stats,
+                "rebuilding": self.rebuilding,
+            }
 
 
 # Global instance

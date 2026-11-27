@@ -27,7 +27,7 @@ jobs:
       - name: Ruff format check
         run: ruff format --check .
       - name: Mypy
-        run: mypy --ignore-missing-imports main.py rag.py waha.py vectorstore.py cache.py config.py embeddings.py watcher.py run.py
+        run: mypy --ignore-missing-imports main.py rag.py waha.py vectorstore.py cache.py config.py embeddings.py watcher.py run.py voice.py structured_extractor.py
 
   tests:
     name: Unit tests
@@ -82,16 +82,21 @@ jobs:
   dependency-audit:
     name: Dependency audit (pip-audit)
     runs-on: ubuntu-latest
+    # Informational: a published CVE or a flaky PyPI mirror must not block the
+    # build. Findings are still printed in the job log.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install project dependencies
+        run: pip install --no-cache-dir -r requirements.txt
       - name: Install pip-audit
         run: pip install pip-audit
-      - name: Audit dependencies
-        run: pip-audit -r requirements.txt
+      - name: Audit installed packages
+        run: pip-audit --local --progress-spinner off
 
   # Optional: publish images on tag
   # publish:

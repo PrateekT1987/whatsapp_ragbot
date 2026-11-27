@@ -19,13 +19,70 @@ logger = logging.getLogger(__name__)
 
 # Words that carry no retrieval signal on their own.
 _STOPWORDS = {
-    "the", "a", "an", "and", "or", "of", "for", "to", "in", "on", "at", "by",
-    "with", "from", "is", "are", "was", "were", "be", "been", "do", "does",
-    "did", "what", "who", "whom", "whose", "which", "when", "where", "why",
-    "how", "give", "gives", "tell", "show", "list", "find", "get", "me",
-    "my", "about", "details", "detail", "information", "info", "please",
-    "can", "could", "would", "should", "any", "all", "this", "that", "these",
-    "those", "there", "their", "has", "have", "had", "it", "its",
+    "the",
+    "a",
+    "an",
+    "and",
+    "or",
+    "of",
+    "for",
+    "to",
+    "in",
+    "on",
+    "at",
+    "by",
+    "with",
+    "from",
+    "is",
+    "are",
+    "was",
+    "were",
+    "be",
+    "been",
+    "do",
+    "does",
+    "did",
+    "what",
+    "who",
+    "whom",
+    "whose",
+    "which",
+    "when",
+    "where",
+    "why",
+    "how",
+    "give",
+    "gives",
+    "tell",
+    "show",
+    "list",
+    "find",
+    "get",
+    "me",
+    "my",
+    "about",
+    "details",
+    "detail",
+    "information",
+    "info",
+    "please",
+    "can",
+    "could",
+    "would",
+    "should",
+    "any",
+    "all",
+    "this",
+    "that",
+    "these",
+    "those",
+    "there",
+    "their",
+    "has",
+    "have",
+    "had",
+    "it",
+    "its",
 }
 
 
@@ -54,7 +111,10 @@ class HybridRetriever(BaseRetriever):
     k: int = 4
 
     def _get_relevant_documents(
-        self, query: str, *, run_manager: Optional[CallbackManagerForRetrieverRun] = None
+        self,
+        query: str,
+        *,
+        run_manager: Optional[CallbackManagerForRetrieverRun] = None,
     ) -> List[Document]:
         return self.manager.search(query, k=self.k)
 
@@ -74,7 +134,9 @@ class QdrantVectorStoreManager:
         self.qdrant_api_key = qdrant_api_key
         self.embeddings = embeddings
 
-        self.vectorstore = self._create_qdrant(embeddings, collection_name, qdrant_url, qdrant_api_key)
+        self.vectorstore = self._create_qdrant(
+            embeddings, collection_name, qdrant_url, qdrant_api_key
+        )
         self._all_docs: Optional[List[Document]] = None
 
         # Persist which files are already indexed (path -> mtime). Without this

@@ -18,6 +18,7 @@ documents_*
 qdrant_data
 cache
 waha_sessions
+waha_media
 .chroma
 chroma_db
 chroma_db_*

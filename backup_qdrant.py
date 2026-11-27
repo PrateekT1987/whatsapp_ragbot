@@ -36,7 +36,9 @@ def list_snapshots() -> list[dict]:
         snapshots = []
         for coll in collections:
             name = coll["name"]
-            snap_resp = client.get(f"{QDRANT_URL}/collections/{name}/snapshots", headers=HEADERS)
+            snap_resp = client.get(
+                f"{QDRANT_URL}/collections/{name}/snapshots", headers=HEADERS
+            )
             if snap_resp.status_code == 200:
                 for snap in snap_resp.json()["result"]:
                     snapshots.append({"collection": name, **snap})
@@ -92,8 +94,12 @@ def main():
     parser = argparse.ArgumentParser(description="Qdrant snapshot manager")
     parser.add_argument("--list", action="store_true", help="List all snapshots")
     parser.add_argument("--create", action="store_true", help="Create a snapshot")
-    parser.add_argument("--download", action="store_true", help="Download snapshot after create")
-    parser.add_argument("--collection", help="Collection name (required for create/restore)")
+    parser.add_argument(
+        "--download", action="store_true", help="Download snapshot after create"
+    )
+    parser.add_argument(
+        "--collection", help="Collection name (required for create/restore)"
+    )
     parser.add_argument("--restore", help="Restore from local snapshot file")
     parser.add_argument("--output", default=".", help="Output directory for downloads")
     args = parser.parse_args()

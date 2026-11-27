@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Unit tests for the P1 reliability/quality changes (no network needed)."""
+
 import os
 import sys
 import unittest
@@ -126,9 +127,7 @@ class SourceTests(unittest.TestCase):
                 metadata={"source": "handbook.pdf", "page": 4},
             )
         ]
-        self.assertEqual(
-            _format_sources(docs), "\n\n📄 Source: handbook.pdf, page 5"
-        )
+        self.assertEqual(_format_sources(docs), "\n\n📄 Source: handbook.pdf, page 5")
 
     def test_deduplicates_and_limits(self):
         docs = [

@@ -11,6 +11,7 @@ of a "Message Yourself" bot:
    `message` and `message.any` events, and retries on errors. Message ids are
    remembered with a TTL.
 """
+
 import asyncio
 import hashlib
 import logging
@@ -36,7 +37,7 @@ def _backoff(attempt: int, retry_after: Optional[str] = None) -> float:
             return min(15.0, max(0.0, float(retry_after)))
         except (TypeError, ValueError):
             pass
-    base = min(8.0, 0.5 * (2 ** attempt))
+    base = min(8.0, 0.5 * (2**attempt))
     return base + random.uniform(0, base)
 
 
@@ -75,9 +76,7 @@ def _is_self_chat_payload(
 
     sender = payload.get("from")
     recipient = payload.get("to")
-    return bool(
-        sender and recipient and _user_part(sender) == _user_part(recipient)
-    )
+    return bool(sender and recipient and _user_part(sender) == _user_part(recipient))
 
 
 def extract_message_id(payload: Dict[str, Any] | None) -> Optional[str]:
@@ -155,7 +154,9 @@ class WAHAClient:
             self._me_id = cached.get("me_id")
             self._me_lid = cached.get("me_lid")
             if self._me_id:
-                logger.info(f"Loaded cached session info for {self.session}: me_id={self._me_id}, me_lid={self._me_lid}")
+                logger.info(
+                    f"Loaded cached session info for {self.session}: me_id={self._me_id}, me_lid={self._me_lid}"
+                )
 
     # ------------------------------------------------------------- helpers
     def _headers(self) -> dict[str, str]:
@@ -174,9 +175,7 @@ class WAHAClient:
                 base_url=self.base_url,
                 headers=self._headers(),
                 timeout=httpx.Timeout(config.WAHA_TIMEOUT, connect=5.0),
-                limits=httpx.Limits(
-                    max_connections=20, max_keepalive_connections=10
-                ),
+                limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
             )
         return self._http
 
@@ -212,7 +211,10 @@ class WAHAClient:
                     delay = _backoff(attempt, resp.headers.get("Retry-After"))
                     logger.warning(
                         "WAHA %s %s -> %s; retrying in %.1fs",
-                        method, path, resp.status_code, delay,
+                        method,
+                        path,
+                        resp.status_code,
+                        delay,
                     )
                     await asyncio.sleep(delay)
                     continue
@@ -228,7 +230,10 @@ class WAHAClient:
                 delay = _backoff(attempt)
                 logger.warning(
                     "WAHA %s %s failed (%s); retrying in %.1fs",
-                    method, path, exc, delay,
+                    method,
+                    path,
+                    exc,
+                    delay,
                 )
                 await asyncio.sleep(delay)
             except httpx.TimeoutException:
@@ -255,10 +260,7 @@ class WAHAClient:
         The inbound dedupe cache must not be consulted here: a brand new
         question is marked as seen right before this check.
         """
-        return (
-            message_id in self._sent_ids
-            or _fingerprint(body) in self._sent_bodies
-        )
+        return message_id in self._sent_ids or _fingerprint(body) in self._sent_bodies
 
     def mark_seen(self, message_id: Optional[str]) -> bool:
         """Return True if this message id was already handled."""
@@ -277,7 +279,9 @@ class WAHAClient:
                 "GET", f"/api/sessions/{self.session}", retries=1, timeout=10.0
             )
             if resp.status_code != 200:
-                logger.warning("Could not read session %s: %s", self.session, resp.status_code)
+                logger.warning(
+                    "Could not read session %s: %s", self.session, resp.status_code
+                )
                 return None
             data = resp.json()
             me = data.get("me") or {}
@@ -325,7 +329,9 @@ class WAHAClient:
             if resp.status_code >= 400:
                 logger.error(
                     "WAHA %s failed (%s): %s",
-                    path, resp.status_code, resp.text[:300],
+                    path,
+                    resp.status_code,
+                    resp.text[:300],
                 )
                 return None
             try:
@@ -362,7 +368,7 @@ class WAHAClient:
 
     async def send_chunk(self, chat_id: str, chunk: str) -> bool:
         """Send a streaming chunk to WhatsApp.
-        
+
         Note: This uses the same sendText API. For true streaming, you'd need
         a different approach (e.g., sending to a buffer and flushing periodically).
         """
@@ -415,10 +421,14 @@ class WAHAClient:
         data = await self._post(f"/api/sessions/{self.session}/restart", {}, retries=1)
         if data is None:
             await self._post(f"/api/sessions/{self.session}/stop", {}, retries=1)
-            data = await self._post(f"/api/sessions/{self.session}/start", {}, retries=1)
+            data = await self._post(
+                f"/api/sessions/{self.session}/start", {}, retries=1
+            )
         return data or {}
 
-    async def wait_for_qr(self, attempts: int = 20, delay: float = 0.7) -> Optional[bytes]:
+    async def wait_for_qr(
+        self, attempts: int = 20, delay: float = 0.7
+    ) -> Optional[bytes]:
         """Poll WAHA until a QR image is available (it appears a few seconds
         after the session starts)."""
         for _ in range(attempts):
@@ -439,7 +449,9 @@ class WAHAClient:
                 params={"format": "image"},
                 headers={"Accept": "image/png"},
             )
-            if resp.status_code == 200 and resp.headers.get("content-type", "").startswith("image"):
+            if resp.status_code == 200 and resp.headers.get(
+                "content-type", ""
+            ).startswith("image"):
                 return resp.content
         except Exception as exc:  # noqa: BLE001
             logger.warning("Could not fetch QR: %s", exc)

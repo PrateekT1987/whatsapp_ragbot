@@ -46,4 +46,8 @@ build/
 *.egg-info/
 
 # Cache
-cache/backups/
+cache/
+backups/
+
+# WAHA downloaded media (voice notes)
+waha_media/

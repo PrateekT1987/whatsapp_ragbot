@@ -7,28 +7,36 @@ FROM python:3.11-slim@sha256:e88e9763f943ec1834f992a4b51e0f24500486803e8bc534e57
 WORKDIR /build
 
 # Build-time dependencies only (removed at the end of this stage)
-RUN apt-get update && apt-get install -y --no-install-recommends gcc && \
+RUN apt-get update && apt-get install -y --no-install-recommends gcc python3-setuptools && \
     rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
-# Install to a local prefix so we can copy it to the final image
-RUN pip install --no-cache-dir --timeout=300 --retries=10 \
+# Install to a local prefix so we can copy it to the final image.
+RUN pip install --no-cache-dir --timeout=300 --retries=20 \
+    --prefix=/install setuptools wheel && \
+    pip install --no-cache-dir --timeout=300 --retries=20 \
     --prefix=/install -r requirements.txt
 
 # Prefetch the fastembed ONNX model so the first container start is instant.
 # Use PYTHONPATH so the just-installed packages are importable.
 ENV FASTEMBED_CACHE_PATH=/model-cache \
+    HF_HOME=/model-cache/hf \
     PYTHONPATH=/install/lib/python3.11/site-packages
-RUN python -c "from fastembed import TextEmbedding; TextEmbedding()"
+ARG LOCAL_EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
+RUN python -c "from fastembed import TextEmbedding; TextEmbedding(model_name='${LOCAL_EMBEDDING_MODEL}')"
+
+# Prefetch the default Whisper model so the first voice note needs no download.
+RUN python -c "from faster_whisper import WhisperModel; WhisperModel('tiny', device='cpu', compute_type='int8')"
 
 # -----------------------------------------------------------
 # Final stage: runtime only
 # -----------------------------------------------------------
-FROM python:3.11-slim@sha256:e88e9763f943ec1834f992a4b51e0f24500486803e8bc534e5767af9ea65f6ce
+FROM python:3.11-slim@sha256:e88e9763f943ec1834f992a4b51e0f24500486803e8bc534e5767af9ea65f6ce AS final
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    FASTEMBED_CACHE_PATH=/model-cache
+    FASTEMBED_CACHE_PATH=/model-cache \
+    HF_HOME=/model-cache/hf
 
 WORKDIR /app
 

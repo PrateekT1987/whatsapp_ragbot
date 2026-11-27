@@ -156,7 +156,9 @@ class SessionCache:
             logger.warning(f"Session cache read error: {e}")
             return None
 
-    def set_me_info(self, session_name: str, me_id: str, me_lid: Optional[str] = None) -> None:
+    def set_me_info(
+        self, session_name: str, me_id: str, me_lid: Optional[str] = None
+    ) -> None:
         """Cache me_id and me_lid for a session."""
         key = f"me_info:{session_name}"
         data = {"me_id": me_id}

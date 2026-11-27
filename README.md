@@ -29,6 +29,7 @@ namespace, so the two never mix context.
 - 🧠 **100 % free stack** – local ONNX embeddings + OpenRouter free model
 - 🗄️ **Qdrant vector store** – persistent, fast, one collection per bot
 - 🔎 **Hybrid retrieval** – keyword matching for names/numbers plus vector similarity
+- 🎤 **Voice notes** – WhatsApp voice messages are transcribed locally (Whisper) and answered like text
 - ⚡ **Two-level query cache** – in-memory LRU + on-disk TTL cache
 - 📚 **Citations** – answers end with `Source: file, page N`
 - 🧹 **WhatsApp-safe formatting** – Markdown is converted before sending
@@ -174,6 +175,27 @@ from its documents folder.
    cached, and sent back to the self-chat. While `/reload` runs, new questions
    get a "reindexing" reply instead of an empty answer.
 
+### Voice notes → text
+
+WhatsApp voice messages (`ptt`/`audio`) are handled before the text path:
+
+1. WAHA downloads the media and the webhook carries its URL
+   (`/api/files/<session>/<message-id>.ogg`). Media is kept for
+   `WHATSAPP_FILES_LIFETIME` seconds (600 in Compose) and stored under
+   `waha_media/<session>/`.
+2. `voice.py` downloads the file through the bot's WAHA connection and
+   transcribes it with [faster-whisper](https://github.com/SYSTRAN/faster-whisper)
+   on the CPU (`WHISPER_MODEL`, default `tiny`, int8).
+3. The transcript goes through exactly the same pipeline as typed text:
+   commands, structured SQL queries, conversation memory, hybrid retrieval,
+   caching and citations. The bot replies in text.
+4. If transcription fails, the bot asks you to retry or send text. With
+   `WHISPER_ENABLED=false`, voice notes are ignored silently.
+
+The default `tiny` model is downloaded at image build time, so the first voice
+note needs no network access. Setting a bigger model (`base`, `small`,
+`medium`, `large`) downloads it on first use.
+
 ### Why local embeddings?
 
 OpenRouter serves **chat completions only** – it has no `/embeddings` endpoint.
@@ -293,7 +315,7 @@ These are consumed by `docker-compose.yml`, not by the bot:
 | `QDRANT_URL` | `http://localhost:6333` | Qdrant endpoint (compose uses `http://qdrant:6333`) |
 | `QDRANT_API_KEY` | – | Qdrant API key (required by the Compose stack) |
 | `QDRANT_COLLECTION` | `rag_documents` | **must be unique per bot** |
-| `FASTEMBED_CACHE_PATH` | `~/.cache/fastembed` | where the ONNX model is cached (Compose mounts a shared volume) |
+| `FASTEMBED_CACHE_PATH` | `/model-cache` | ONNX model cache (the default model is baked into the image) |
 | `CACHE_ENABLED` | `true` | enable the query cache |
 | `CACHE_TTL` | `3600` | cache entry lifetime (seconds) |
 | `CACHE_DIR` | `./cache` | disk-cache directory |
@@ -304,6 +326,9 @@ These are consumed by `docker-compose.yml`, not by the bot:
 | `MAX_CONCURRENT_QUERIES` | `2` | parallel LLM calls across all chats |
 | `MAX_QUEUED_PER_CHAT` | `5` | messages buffered per chat before it gets a "busy" notice |
 | `STREAM_CHUNK_DELAY_MS` | `400` | pause between streamed bubbles (flood protection) |
+| `WHISPER_ENABLED` | `true` | transcribe WhatsApp voice notes locally |
+| `WHISPER_MODEL` | `tiny` | faster-whisper size: `tiny` (prefetched), `base`, `small`, `medium`, `large` |
+| `WHISPER_LANGUAGE` | – | force a language code, empty = auto-detect |
 | `STARTUP_RETRY_SECONDS` | `2` | first Qdrant-connect retry delay (doubles to 60s) |
 | `UVICORN_RELOAD` | `false` | dev-only auto-restart on `.py` edits |
 | `SYSTEM_PROMPT` | see `.env.example` | assistant behaviour |

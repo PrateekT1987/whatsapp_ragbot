@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Smoke test for the RAG pipeline (no WhatsApp/WAHA involved)."""
+
 import os
 import sys
 from pathlib import Path
@@ -44,7 +45,9 @@ def main() -> int:
     print(f"✅ Indexed {count} file(s)")
 
     stats = rag_system.get_stats()
-    print(f"📊 Chunks: {stats.get('document_count', 0)} | Files: {stats.get('processed_files', 0)}")
+    print(
+        f"📊 Chunks: {stats.get('document_count', 0)} | Files: {stats.get('processed_files', 0)}"
+    )
 
     question = "What is this document about?"
     print(f"\n💬 Q: {question}")

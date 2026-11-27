@@ -95,9 +95,7 @@ class ChatDispatcher:
         if queue is None:
             queue = asyncio.Queue(maxsize=self._max_queue)
             self._queues[chat_id] = queue
-            self._workers[chat_id] = asyncio.create_task(
-                self._worker(chat_id, queue)
-            )
+            self._workers[chat_id] = asyncio.create_task(self._worker(chat_id, queue))
         try:
             queue.put_nowait(payload)
             return True
@@ -161,9 +159,7 @@ def verify_webhook_signature(
     return hmac.compare_digest(signature, expected)
 
 
-_dispatcher = ChatDispatcher(
-    config.MAX_CONCURRENT_QUERIES, config.MAX_QUEUED_PER_CHAT
-)
+_dispatcher = ChatDispatcher(config.MAX_CONCURRENT_QUERIES, config.MAX_QUEUED_PER_CHAT)
 
 
 async def _handle_command(text: str, chat_id: str = "") -> str | None:
@@ -250,6 +246,7 @@ async def _handle_command(text: str, chat_id: str = "") -> str | None:
                 rag_system.vector_manager.remove_processed_file(pdf_path)
             # Also remove from structured data (SQLite)
             import sqlite3
+
             with sqlite3.connect(config.STRUCTURED_DB_PATH) as conn:
                 conn.execute("DELETE FROM members WHERE source_file = ?", (filename,))
             return f"✅ Deleted {filename} from index"
@@ -273,6 +270,7 @@ async def _handle_command(text: str, chat_id: str = "") -> str | None:
         rating = "good" if cmd == "/good" else "bad"
         try:
             import sqlite3
+
             with sqlite3.connect(config.FEEDBACK_DB_PATH) as conn:
                 conn.execute("""
                     CREATE TABLE IF NOT EXISTS feedback (
@@ -284,11 +282,17 @@ async def _handle_command(text: str, chat_id: str = "") -> str | None:
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                 """)
-                conn.execute("""
+                conn.execute(
+                    """
                     INSERT INTO feedback (chat_id, rating) VALUES (?, ?)
-                """, (chat_id, rating))
-            return ("👍 Thanks for the feedback!" if rating == "good" 
-            else "👎 Thanks, we'll improve.")
+                """,
+                    (chat_id, rating),
+                )
+            return (
+                "👍 Thanks for the feedback!"
+                if rating == "good"
+                else "👎 Thanks, we'll improve."
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning("Feedback save failed: %s", exc)
             return "❌ Could not save feedback."
@@ -327,14 +331,21 @@ async def _process_message(payload: dict) -> None:
     if msg_type in ("ptt", "audio", "voice"):
         if not await waha.is_self_chat(payload):
             if config.WAHA_SELF_CHAT_ONLY:
-                logger.debug("Ignoring non self-chat voice from %s", payload.get("chatId"))
+                logger.debug(
+                    "Ignoring non self-chat voice from %s", payload.get("chatId")
+                )
                 return
+        if not config.WHISPER_ENABLED:
+            logger.info("Ignoring voice note: WHISPER_ENABLED=false")
+            return
         text = await handle_voice_note(waha, payload, chat_id)
         if not text:
-            await waha.send_text(chat_id, "🎤 Could not transcribe voice note. Please try again or send text.")
+            await waha.send_text(
+                chat_id,
+                "🎤 Could not transcribe that voice note. Please try again or send text.",
+            )
             return
         body = text
-        logger.info("Voice transcribed: %s", text[:100])
     else:
         # Text message handling
         body = (payload.get("body") or "").strip()
@@ -346,7 +357,9 @@ async def _process_message(payload: dict) -> None:
 
         if not await waha.is_self_chat(payload):
             if config.WAHA_SELF_CHAT_ONLY:
-                logger.debug("Ignoring non self-chat message from %s", payload.get("chatId"))
+                logger.debug(
+                    "Ignoring non self-chat message from %s", payload.get("chatId")
+                )
                 return
 
         # Our own answer echoed back into the self-chat - never answer it.
@@ -356,8 +369,12 @@ async def _process_message(payload: dict) -> None:
 
     # Privacy: question text is only logged when explicitly enabled.
     if config.LOG_QUESTION_TEXT:
-        logger.info("Question from %s (chatId: %s): %s",
-                    payload.get("from"), payload.get("chatId"), body[:120])
+        logger.info(
+            "Question from %s (chatId: %s): %s",
+            payload.get("from"),
+            payload.get("chatId"),
+            body[:120],
+        )
     else:
         logger.info("Question from %s (%d chars)", payload.get("from"), len(body))
 
@@ -421,9 +438,7 @@ async def _retry_rag_init() -> None:
             logger.error("RAG initialization cannot succeed: %s", exc)
             return
         except Exception as exc:  # noqa: BLE001
-            logger.error(
-                "RAG initialization failed: %s (retrying in %ss)", exc, delay
-            )
+            logger.error("RAG initialization failed: %s (retrying in %ss)", exc, delay)
             await asyncio.sleep(delay)
             delay = min(delay * 2, 60)
 
@@ -527,14 +542,15 @@ async def request_context(request: Request, call_next):
         duration = time.perf_counter() - started
         route = request.scope.get("route")
         path = getattr(route, "path", "unmatched")
-        HTTP_REQUESTS.labels(
-            method=request.method, path=path, status=str(status)
-        ).inc()
+        HTTP_REQUESTS.labels(method=request.method, path=path, status=str(status)).inc()
         HTTP_DURATION.labels(method=request.method, path=path).observe(duration)
         if path != "/metrics":
             logger.info(
                 "HTTP %s %s -> %s in %.0f ms",
-                request.method, path, status, duration * 1000,
+                request.method,
+                path,
+                status,
+                duration * 1000,
             )
         request_id_var.reset(token)
 
@@ -629,7 +645,9 @@ async def waha_webhook(request: Request):
         except ValueError as exc:
             logger.warning("Rejected webhook: %s", exc)
             WEBHOOK_EVENTS.labels(result="bad_algorithm").inc()
-            raise HTTPException(status_code=401, detail="Unsupported signature algorithm")
+            raise HTTPException(
+                status_code=401, detail="Unsupported signature algorithm"
+            )
         if not valid:
             logger.warning("Rejected webhook with invalid HMAC signature")
             WEBHOOK_EVENTS.labels(result="invalid_signature").inc()
@@ -659,7 +677,8 @@ async def waha_webhook(request: Request):
     if incoming_session and incoming_session != config.WAHA_SESSION:
         logger.warning(
             "Rejected webhook for session %r (expected %r)",
-            incoming_session, config.WAHA_SESSION,
+            incoming_session,
+            config.WAHA_SESSION,
         )
         WEBHOOK_EVENTS.labels(result="session_mismatch").inc()
         return JSONResponse(
@@ -782,7 +801,7 @@ async def qr_page():
             "<h1>Scan to pair WhatsApp</h1>"
             f'<p class="muted">Session status: <code>{status}</code></p>'
             '<div class="frame"><img id="qr" src="/qr.png" alt="pairing QR" '
-            'onerror="this.style.display=\'none\';document.getElementById(\'msg\').style.display=\'block\'">'
+            "onerror=\"this.style.display='none';document.getElementById('msg').style.display='block'\">"
             '<p id="msg" style="display:none">Generating a fresh QR…</p></div>'
             "<p>WhatsApp → <b>Settings</b> → <b>Linked devices</b> → <b>Link a device</b></p>"
             "<p>This page refreshes every 10 seconds; the QR expires quickly.</p>"
