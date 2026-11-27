@@ -82,9 +82,6 @@ jobs:
   dependency-audit:
     name: Dependency audit (pip-audit)
     runs-on: ubuntu-latest
-    # Informational: a published CVE or a flaky PyPI mirror must not block the
-    # build. Findings are still printed in the job log.
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - name: Set up Python
@@ -96,7 +93,11 @@ jobs:
       - name: Install pip-audit
         run: pip install pip-audit
       - name: Audit installed packages
-        run: pip-audit --local --progress-spinner off
+        # Informational: a published CVE or a flaky advisory mirror must not
+        # block the build. Findings are printed above and as a warning.
+        run: |
+          pip-audit --local --progress-spinner off || \
+            echo "::warning::pip-audit reported vulnerabilities (see the log above); the build is not blocked."
 
   # Optional: publish images on tag
   # publish:
